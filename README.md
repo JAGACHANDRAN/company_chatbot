@@ -1,86 +1,133 @@
-# Company Search AI Chatbot (PostgreSQL + Ollama + FastAPI + React)
+# Calispec AI — Company & Contact Search Chatbot
 
-A full-stack, enterprise-grade AI Search Assistant designed to query **~5,000 clean company records stored in PostgreSQL**.
+An enterprise-grade, full-stack AI search assistant designed for querying, retrieving, and inspecting **company and contact intelligence** across **MongoDB Atlas** collections and uploaded Excel/CSV datasets.
 
-The application uses **Ollama** strictly for natural language query understanding (extracting search field and search value into structured JSON) and executes fast, parameterized, SQL-injection safe queries directly on **PostgreSQL**.
+The system combines **Natural Language Query Understanding**, **Intelligent Search Routing**, **Structured MongoDB Queries**, and **Vector Semantic Search**, delivering accurate, hallucination-free results with **strict source schema preservation** and interactive clickable hyperlinks.
 
 ---
 
-## 🏛️ Architecture Overview
+## 🏛️ System Architecture
 
 ```text
-                    Excel (.xlsx)
-                         ↓
-                    Save As CSV (UTF-8)
-                         ↓
-               PostgreSQL (5,000+ records)
-                         ↓
-                   FastAPI Backend
-                         ↓
-              ┌──────────┴──────────┐
-              ↓                     ↓
-        Ollama LLM            PostgreSQL
-    Query Understanding      Search Query
-              └──────────┬──────────┘
-                         ↓
-                    JSON Result
-                         ↓
-                   React Chatbot
+                                 User Query
+                                     │
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │    Query Understanding      │
+                      │  (Entity & Intent Parser)   │
+                      └──────────────┬──────────────┘
+                                     │ StructuredQuery (companies, people, locations, roles)
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │        Query Router         │
+                      │  (Search Plan Formulation)  │
+                      └──────────────┬──────────────┘
+                                     │
+             ┌───────────────────────┴───────────────────────┐
+             ▼                                               ▼
+┌─────────────────────────────┐               ┌─────────────────────────────┐
+│   Structured Mongo Search   │               │   Vector / Semantic Search  │
+│  (Exact Entity, Word-Bound, │               │   (Atlas Vector Search /    │
+│   Normalized Search Match)  │               │    Ollama Embeddings)       │
+└────────────┬────────────────┘               └──────────────┬──────────────┘
+             │                                               │
+             └───────────────────────┬───────────────────────┘
+                                     │ Candidate Records
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │  Relevance & Entity Guards  │
+                      │  (Strict Multi-Company &    │
+                      │   Exact-Match Priority)     │
+                      └──────────────┬──────────────┘
+                                     │
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │ Deduplication & Reranking   │
+                      └──────────────┬──────────────┘
+                                     │ Verified Records Grouped by Source
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │ Final Response Generator    │
+                      │ • Strict Source Columns     │
+                      │ • Source File Attribution   │
+                      │ • Clickable Hyperlinks      │
+                      └──────────────┬──────────────┘
+                                     │
+                                     ▼
+                      ┌─────────────────────────────┐
+                      │   React + Vite Frontend     │
+                      │ (Dark Glassmorphism, Links, │
+                      │  Dynamic Dataset Selector)  │
+                      └─────────────────────────────┘
 ```
 
-### Core Design Rules
-1. **PostgreSQL is the Source of Truth**: All company records reside exclusively in PostgreSQL.
-2. **Ollama LLM Responsibility**: Parses natural language requests (e.g., *"Find the company with abc@gmail.com"*) into structured JSON `{"field": "email", "value": "abc@gmail.com"}`. The LLM **never** generates SQL and **never** invents missing data.
-3. **No RAG / No Vectors**: The data is relational; standard B-Tree indexing and parameterized queries provide instant, exact results.
-4. **No Pandas/Numpy**: Database import is executed via native PostgreSQL tools (pgAdmin / `\copy`).
-5. **Preserves Missing Data (NULL)**: Database `NULL` values are preserved in the JSON API and cleanly presented as *"Not available"* in the UI.
-6. **Dynamic Columns**: Displays any additional columns present in the dataset automatically.
+---
+
+## ✨ Key Features
+
+- **Exact Entity Guarding**: Exact company/contact searches prioritize deterministic entity matching so exact queries are never polluted with unrelated semantic matches.
+- **Strict Source Schema Preservation**: Dynamically outputs only the actual columns present in each source file/collection. Non-existent fields are never fabricated or shown as *"Not Available"*.
+- **Multi-Dataset Source Attribution**: Results clearly indicate `Source File` (and `Source Sheet` / `Source Row` when available) at the top of each section. Multiple sources are cleanly separated with markdown dividers (`---`).
+- **Clickable Hyperlinks**: Emails are rendered as `mailto:` links, and LinkedIn/website URLs are rendered as interactive `target="_blank"` links in both markdown narrative and UI cards.
+- **Internal Field Concealment**: Search tokens (`norm_company_name`, `norm_person_name`, `search_text`, `embedding`, raw objects) are strictly internal and never exposed to the user.
+- **Dynamic Dataset Uploads**: Live upload for Excel (`.xlsx`) and CSV files with automatic schema inference, indexing, and immediate integration into the search pool.
+- **Deterministic Fallback Engine**: If the LLM service is offline or unavailable, an intelligent deterministic response synthesizer formats retrieved records without downtime.
+
+---
+
+## 🛠️ Technology Stack
+
+| Layer | Technologies |
+| :--- | :--- |
+| **Backend** | Python 3.10+, FastAPI, Uvicorn, Pydantic v2, HTTPX, OpenPyXL |
+| **Database** | MongoDB Atlas (PyMongo, Motor async driver, Atlas Vector Search) |
+| **AI / NLP** | Ollama (Local or Cloud API) / Heuristic Query Parser Fallback |
+| **Frontend** | React 18, Vite, Tailwind CSS, Google Material Symbols |
 
 ---
 
 ## 📂 Project Structure
 
 ```text
-company-search-chatbot/
+Calispec chatbot project/
+├── backend/
+│   ├── app/
+│   │   ├── routes/
+│   │   │   ├── chat.py             # /api/chat and /api/search endpoints
+│   │   │   └── datasets.py         # /api/datasets upload, list & delete
+│   │   ├── services/
+│   │   │   ├── query_understanding.py  # Structured query & entity extraction
+│   │   │   ├── query_router.py         # Search plan generator
+│   │   │   ├── retrieval_service.py    # Hybrid retrieval, merge, & dedup
+│   │   │   ├── mongo_search.py         # MongoDB queries & structured filters
+│   │   │   ├── vector_search.py        # Vector embedding & semantic search
+│   │   │   ├── response_generator.py   # Final answer synthesizer & link formatter
+│   │   │   └── mongo_dataset.py        # Dataset indexing & collection management
+│   │   ├── utils/
+│   │   │   └── normalization.py    # String normalization & source field extraction
+│   │   ├── database.py             # MongoDB connection manager
+│   │   ├── main.py                 # FastAPI application & CORS setup
+│   │   └── schemas.py              # Pydantic request & response models
+│   ├── tests/                      # Unit and integration test suite (35+ tests)
+│   ├── requirements.txt            # Python dependencies
+│   └── .env.example                # Backend configuration template
 │
-├── frontend/                     # React + Vite Application
+├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── Chat.jsx          # Message stream and coordinator
-│   │   │   ├── ChatMessage.jsx   # Message bubbles & search intent tags
-│   │   │   ├── InputBox.jsx      # Floating search dock
-│   │   │   ├── ResultCard.jsx    # Dynamic company details card
-│   │   │   └── EmptyState.jsx    # Hero welcome and prompt chips
-│   │   │
-│   │   ├── api.js                # Backend API connector
-│   │   ├── App.jsx               # Root state and header
-│   │   ├── main.jsx              # Entry point
-│   │   └── index.css             # Enterprise styling system
-│   │
-│   ├── index.html
+│   │   │   ├── Chat.jsx            # Chat message feed and orchestration
+│   │   │   ├── ChatMessage.jsx     # Message bubbles, markdown link parser & telemetry
+│   │   │   ├── DatasetSelector.jsx # Active dataset filtering dropdown
+│   │   │   ├── DataView.jsx        # Tabular data inspection view
+│   │   │   ├── InputBox.jsx        # Search bar & voice input
+│   │   │   ├── ResultCard.jsx      # Formatted record display card
+│   │   │   └── UploadModal.jsx     # Dataset upload dialog (CSV/XLSX)
+│   │   ├── api.js                  # Frontend API client
+│   │   ├── App.jsx                 # Root layout & state
+│   │   ├── main.jsx                # Entry point
+│   │   └── index.css               # Design system & dark glassmorphic styles
 │   ├── package.json
-│   ├── vite.config.js
-│   ├── .env.example
-│   └── README.md
-│
-├── backend/                      # Python + FastAPI Application
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py               # FastAPI entry, CORS & health checks
-│   │   ├── database.py           # SQLAlchemy engine & session pool
-│   │   ├── models.py             # Company SQLAlchemy model
-│   │   ├── schemas.py            # Pydantic schemas
-│   │   ├── search.py             # Parameterized search engine
-│   │   ├── llm.py                # Ollama query parser
-│   │   │
-│   │   └── routes/
-│   │       ├── __init__.py
-│   │       └── chat.py           # /api/chat, /api/search, /api/fields
-│   │
-│   ├── schema.sql                # PostgreSQL table & index creation script
-│   ├── requirements.txt          # Python dependencies (no pandas)
-│   ├── .env.example              # Backend environment template
-│   └── README.md
+│   └── vite.config.js
 │
 ├── .gitignore
 └── README.md
@@ -88,148 +135,148 @@ company-search-chatbot/
 
 ---
 
-## 🗄️ PostgreSQL Setup & CSV Import Guide
+## 🚀 Getting Started
 
-### 1. Manual Excel to CSV Conversion
-1. Open your Excel workbook (`.xlsx`) containing the ~5,000 company records.
-2. Click **File** > **Save As**.
-3. Select file format: **CSV UTF-8 (Comma delimited) (*.csv)**.
-4. Save the file as `companies.csv`.
+### Prerequisites
 
-### 2. Create Database & Table in pgAdmin
-1. Open **pgAdmin** and connect to your local PostgreSQL server.
-2. Right-click **Databases** > **Create** > **Database...**, name it `company_chatbot`.
-3. Right-click `company_chatbot` > **Query Tool**.
-4. Open and execute [`backend/schema.sql`](file:///c:/Users/Jagathchandran/OneDrive/Pictures/Documents/Desktop/Calispec%20chatbot%20project/backend/schema.sql):
-
-```sql
-CREATE TABLE IF NOT EXISTS companies (
-    id SERIAL PRIMARY KEY,
-    company_name TEXT,
-    phone TEXT,
-    email TEXT,
-    address TEXT,
-    website TEXT,
-    contact_person TEXT,
-    designation TEXT,
-    category TEXT,
-    city TEXT,
-    state TEXT,
-    country TEXT,
-    pincode TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Search Indexes
-CREATE INDEX IF NOT EXISTS idx_companies_name_lower ON companies (LOWER(company_name));
-CREATE INDEX IF NOT EXISTS idx_companies_email_lower ON companies (LOWER(email));
-CREATE INDEX IF NOT EXISTS idx_companies_phone ON companies (phone);
-CREATE INDEX IF NOT EXISTS idx_companies_address_lower ON companies (LOWER(address));
-```
-
-### 3. Import CSV Data into pgAdmin
-1. In pgAdmin, navigate to **Schemas** > **public** > **Tables** > right-click **companies** > **Import/Export Data...**
-2. Toggle slider to **Import**.
-3. Select your `companies.csv` file.
-4. Under **Options**:
-   - Format: `csv`
-   - Encoding: `UTF8`
-   - Header: `Yes`
-   - Delimiter: `,`
-   - Quote: `"`
-5. Under **Columns**, map CSV columns to the table columns.
-6. Click **OK** to run the import.
-
-### 4. Verify Row Count
-Run in pgAdmin Query Tool:
-```sql
-SELECT COUNT(*) FROM companies;
--- Should return ~5,000 rows
-
-SELECT * FROM companies LIMIT 10;
-```
+- **Python**: Version 3.10 or higher
+- **Node.js**: Version 18 or higher (with `npm`)
+- **MongoDB Atlas**: An active cluster URI with read/write permissions
+- *(Optional)* **Ollama**: For local LLM parsing, or an Ollama Cloud API key
 
 ---
 
-## 🤖 Ollama LLM Setup
+### 1. Backend Setup
 
-1. Install [Ollama](https://ollama.com) on your system.
-2. Pull your preferred model (e.g. `llama3.2` or `llama3`):
+1. Open PowerShell and navigate to the backend directory:
    ```powershell
-   ollama pull llama3.2
+   cd backend
    ```
-3. Ollama runs automatically as a background service at `http://localhost:11434`.
+
+2. Create and activate a Python virtual environment:
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   ```
+
+3. Install required Python packages:
+   ```powershell
+   python -m pip install -r requirements.txt
+   ```
+
+4. Configure environment variables:
+   - Copy `.env.example` to `.env`:
+     ```powershell
+     cp .env.example .env
+     ```
+   - Edit `backend/.env` with your settings:
+     ```env
+     # MongoDB Atlas Connection
+     MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/?retryWrites=true&w=majority
+     MONGODB_DB_NAME=calispec
+
+     # Pre-configured collections
+     MONGODB_COLLECTIONS=metrology, Expo_Acme, ECG_Contact, ECG_Marposs, Cleaned_Met_Sales
+
+     # LLM Settings (Ollama Cloud or Local)
+     OLLAMA_BASE_URL=https://api.ollama.com
+     OLLAMA_API_KEY=your_api_key_here
+     LLM_MODEL=gpt-oss:120b
+
+     # Embedding Settings
+     EMBEDDING_PROVIDER=ollama
+     EMBEDDING_MODEL=nomic-embed-text
+     VECTOR_INDEX_NAME=vector_index
+
+     # Server Configuration
+     FRONTEND_URL=http://localhost:5173
+     PORT=8000
+     ```
+
+5. Launch the FastAPI server:
+   ```powershell
+   uvicorn app.main:app --reload --port 8000
+   ```
+
+   - **API Documentation (Swagger UI)**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **Health Check**: [http://localhost:8000/health](http://localhost:8000/health)
 
 ---
 
-## 🚀 Running the Backend
+### 2. Frontend Setup
 
-Open a PowerShell terminal:
+1. Open a second PowerShell terminal and navigate to the frontend directory:
+   ```powershell
+   cd frontend
+   ```
 
+2. Install Node dependencies:
+   ```powershell
+   npm install
+   ```
+
+3. Launch the Vite development server:
+   ```powershell
+   npm run dev
+   ```
+
+4. Open your browser and navigate to:
+   **[http://localhost:5173](http://localhost:5173)**
+
+---
+
+## 📡 API Reference
+
+### Chat & Search
+
+- `POST /api/chat`
+  Main hybrid search endpoint used by the chatbot.
+  - **Body**:
+    ```json
+    {
+      "message": "TVS Motor Company",
+      "dataset_id": "all",
+      "conversation_history": []
+    }
+    ```
+  - **Response**: Returns synthesized answer with source attribution, clean records, and clickable hyperlinks.
+
+- `GET /api/search?q={query}&field={field}&dataset_id={id}`
+  Direct search endpoint supporting target field scoping (`company_name`, `person`, `email`, `phone`, `city`, `designation`).
+
+### Datasets Management
+
+- `GET /api/datasets`
+  Returns all indexed datasets and their metadata (record count, columns, filename).
+
+- `POST /api/datasets/upload`
+  Upload an Excel (`.xlsx`) or CSV (`.csv`) file for automated indexing into MongoDB.
+
+- `DELETE /api/datasets/{dataset_id}`
+  Removes an uploaded dataset and deletes its indexed records from MongoDB.
+
+- `GET /api/collections`
+  Returns active MongoDB collections and document counts.
+
+---
+
+## 🧪 Testing
+
+The backend includes a comprehensive test suite covering query understanding, exact matching, vector guards, source schema preservation, and link formatting:
+
+Run all tests:
 ```powershell
 cd backend
-
-# Create & activate virtual environment
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# Install requirements (FastAPI, SQLAlchemy, psycopg, httpx)
-python -m pip install -r requirements.txt
-
-# Start backend server
-uvicorn app.main:app --reload --port 8000
+python -m unittest discover tests
 ```
 
-- **API Documentation (Swagger UI)**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Health Check**: [http://localhost:8000/health](http://localhost:8000/health)
-
----
-
-## 💻 Running the Frontend
-
-Open a second PowerShell terminal:
-
+Run schema preservation tests specifically:
 ```powershell
-cd frontend
-
-# Install Node dependencies
-npm install
-
-# Start Vite development server
-npm run dev
+python -m unittest tests/test_source_schema_preservation.py
 ```
 
-- **Frontend Chatbot**: [http://localhost:5173](http://localhost:5173)
-
 ---
 
-## 🔍 Example Search Queries to Test
+## 🛡️ License
 
-Try entering any of the following queries in the chatbot:
-
-1. **Company Name**:
-   - `Show me ABC Industries`
-   - `ABC Industries`
-2. **Email Address**:
-   - `Find the company with abc@gmail.com`
-   - `abc@gmail.com`
-3. **Phone Number**:
-   - `Which company has 9876543210?`
-   - `9876543210`
-4. **Address / City**:
-   - `Companies located in Chennai`
-   - `Chennai`
-5. **No Match Record**:
-   - `unknown-company@example.com`
-   *(Verifies that no false information is hallucinated; UI shows "No matching record was found")*
-
----
-
-## 🛠️ Troubleshooting
-
-| Issue | Cause | Solution |
-| :--- | :--- | :--- |
-| **"PostgreSQL Offline" pill in UI** | Invalid database credentials or PostgreSQL service stopped | Verify credentials in `backend/.env` (`DATABASE_URL`) and check that PostgreSQL service is running in Windows Services. |
-| **Ollama connection warning** | Ollama service not running | Run `ollama serve` or open the Ollama desktop application. The system will fall back to intelligent heuristic parsing automatically until Ollama connects. |
-| **Phone number loses leading zero** | Column typed as INTEGER | In PostgreSQL, ensure `phone` column is `TEXT` (as provided in `backend/schema.sql`). |
-| **CORS error in browser** | Port mismatch | Ensure `FRONTEND_URL=http://localhost:5173` is specified in `backend/.env`. |
+Private enterprise repository — all rights reserved.
