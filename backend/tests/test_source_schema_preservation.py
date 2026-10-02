@@ -60,24 +60,24 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         sq = fallback_query_understanding("TVS Motor Company")
         ans = generate_deterministic_answer("TVS Motor Company", sq, [norm_rec])
 
-        # ONLY source file name alone at top - no Dataset: or Database:
+        # Source displayed at top
         self.assertNotIn("Dataset:", ans)
         self.assertNotIn("Database:", ans)
-        self.assertIn("**Source File: Company Leadership Database - Sheet1.csv**", ans)
-        self.assertIn("**Source Row: 8**", ans)
+        self.assertIn("Source File: Company Leadership Database - Sheet1.csv", ans)
         self.assertIn("Company Name: TVS Motor Company", ans)
-        self.assertIn("Person Name: Shreethan Srinivasaiah Shetty", ans)
+        self.assertIn("Contact Person 1:", ans)
+        self.assertIn("Name: Shreethan Srinivasaiah Shetty", ans)
         self.assertIn("Designation: Senior Quality Engineer", ans)
+        self.assertIn("Contact Number 1: Not Available", ans)
+        self.assertIn("Email 1: Not Available", ans)
+        self.assertIn("Location: Not Available", ans)
 
-        # URL must be a markdown hyperlink
-        self.assertIn("[https://in.linkedin.com/in/shreethan-srinivasaiah-shetty-b8094b185](https://in.linkedin.com/in/shreethan-srinivasaiah-shetty-b8094b185)", ans)
-
-        # Ensure NO extra fields in final text answer
+        # Ensure disallowed database fields are NOT in final text answer
         self.assertNotIn("Department:", ans)
         self.assertNotIn("State:", ans)
         self.assertNotIn("City:", ans)
         self.assertNotIn("Country:", ans)
-        self.assertNotIn("Location:", ans)
+        self.assertNotIn("LinkedIn URL", ans)
         self.assertNotIn("Norm Company Name", ans)
         self.assertNotIn("norm_company_name", ans)
         self.assertNotIn("SOURCE 1", ans)
@@ -87,9 +87,7 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         """
         TEST 2:
         If TVS exists in two different files with different columns:
-        Return two separate source sections separated with ---.
-        Do NOT label them SOURCE 1, SOURCE 2, etc.
-        Each section must contain only the columns from that source.
+        Preserve association with their respective source files.
         """
         file_a_rec = {
             "source_file": "File A.csv",
@@ -123,34 +121,29 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         self.assertNotIn("Record 1", ans)
         self.assertNotIn("Dataset:", ans)
         self.assertNotIn("Database:", ans)
-        self.assertIn("---", ans)
 
-        sections = ans.split("---")
-        self.assertEqual(len(sections), 2)
+        # Preserves each source file association
+        self.assertIn("Source File: File A.csv", ans)
+        self.assertIn("Source File: File B.csv", ans)
+        self.assertIn("Company Name: TVS", ans)
+        self.assertIn("Contact Person 1:", ans)
+        self.assertIn("Name: Ravi", ans)
+        self.assertIn("Contact Number 1: 123456", ans)
+        self.assertIn("Name: Kumar", ans)
+        self.assertIn("Email 1: abc@example.com", ans)
 
-        section_1 = sections[0]
-        section_2 = sections[1]
-
-        self.assertIn("**Source File: File A.csv**", section_1)
-        self.assertIn("Company Name: TVS", section_1)
-        self.assertIn("Phone: 123456", section_1)
-        self.assertIn("Region: South", section_1)
-        self.assertNotIn("Department: Production", section_1)
-
-        self.assertIn("**Source File: File B.csv**", section_2)
-        self.assertIn("Company: TVS", section_2)
-        self.assertIn("Contact: Kumar", section_2)
-        # Email must be formatted as hyperlink
-        self.assertIn("[abc@example.com](mailto:abc@example.com)", section_2)
-        self.assertIn("Department: Production", section_2)
-        self.assertNotIn("Region: South", section_2)
+        # Disallowed fields must never appear
+        self.assertNotIn("Department", ans)
+        self.assertNotIn("Region", ans)
 
     def test_test3_empty_column_behavior(self):
         """
         TEST 3:
-        If a source has an empty column value:
-        - If the column exists in the file but value is empty: Column: Not Available
-        - If the column itself does not exist: Do not display the column.
+        Missing information must strictly adhere to:
+        - Contact Number 1: Not Available (if none)
+        - Email 1: Not Available (if none)
+        - Location: Not Available (if none)
+        - Only allowed user-facing fields permitted.
         """
         rec = {
             "source_file": "customers.csv",
@@ -159,19 +152,26 @@ class TestSourceSchemaPreservation(unittest.TestCase):
             "source_fields": {
                 "Company Name": "Acme Corp",
                 "Person Name": "Alice",
-                "Department": "Not Available"  # Existed in source file but empty
+                "Department": "Not Available"
             }
         }
         sq = fallback_query_understanding("Acme Corp")
         ans = generate_deterministic_answer("Acme Corp", sq, [rec])
 
+        self.assertIn("Source File: customers.csv", ans)
         self.assertIn("Company Name: Acme Corp", ans)
-        self.assertIn("Person Name: Alice", ans)
-        self.assertIn("Department: Not Available", ans)
-        # Non-existing columns must NOT appear at all
+        self.assertIn("Contact Person 1:", ans)
+        self.assertIn("Name: Alice", ans)
+        self.assertIn("Designation: Not Available", ans)
+        self.assertIn("Contact Number 1: Not Available", ans)
+        self.assertIn("Email 1: Not Available", ans)
+        self.assertIn("Location: Not Available", ans)
+        # Disallowed fields must NOT appear at all
+        self.assertNotIn("Department", ans)
         self.assertNotIn("State:", ans)
         self.assertNotIn("City:", ans)
-        self.assertNotIn("LinkedIn URL:", ans)
+        self.assertNotIn("LinkedIn URL", ans)
+
 
     def test_test4_no_object_object(self):
         """

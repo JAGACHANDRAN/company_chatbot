@@ -120,15 +120,27 @@ def group_records_by_source(records: List[Dict[str, Any]]) -> List[Dict[str, Any
         ...
     ]
     """
-    groups_dict: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    from ..database import get_database_name
+    default_db_name = get_database_name()
+    groups_dict: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, Any]] = {}
 
     for r in records:
-        db_src = r.get("database_source") or "MongoDB Atlas"
-        col = r.get("source_collection") or "metrology"
-        f_name = r.get("source_file") or f"{col}.xlsx"
+        db_src = r.get("database_source") or r.get("database") or default_db_name
+        col = r.get("source_collection") or "default"
+        # Only preserve genuine source file from an actual column or upload
+        raw_s_file = r.get("source_file")
+        if raw_s_file:
+            s_clean = str(raw_s_file).strip()
+            if s_clean.lower() in ("mongodb", "mongodb atlas", "dataset_records", "none", "not available", "null") or s_clean.startswith("MongoDB:"):
+                f_name = None
+            else:
+                f_name = s_clean
+        else:
+            f_name = None
+
         sheet = r.get("source_sheet")
 
-        group_key = (db_src, col, f_name, str(sheet))
+        group_key = (str(db_src), str(col), f_name, str(sheet) if sheet else None)
         if group_key not in groups_dict:
             groups_dict[group_key] = {
                 "database_source": db_src,

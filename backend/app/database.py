@@ -63,6 +63,20 @@ def get_database() -> Database:
     return client[DEFAULT_DB_NAME]
 
 
+def get_database_name() -> str:
+    """
+    Returns the resolved database name from MongoDB connection or configuration.
+    Never returns generic placeholders.
+    """
+    try:
+        db = get_database()
+        if db is not None:
+            return str(db.name)
+    except Exception:
+        pass
+    return DEFAULT_DB_NAME or "calispec"
+
+
 def get_configured_collection_names() -> List[str]:
     """
     Returns the list of collection names configured for search.
@@ -104,7 +118,8 @@ def get_configured_collection_names() -> List[str]:
     # Auto-discover non-system collections from the database
     try:
         db = get_database()
-        existing = [c for c in db.list_collection_names() if not c.startswith("system.")]
+        internal_cols = {"user", "users", "uploaders", "dataset_records", "datasets"}
+        existing = [c for c in db.list_collection_names() if not c.startswith("system.") and c.lower() not in internal_cols]
         if existing:
             return existing
     except Exception:

@@ -234,7 +234,7 @@ def extract_field_from_dict(doc: Dict[str, Any], candidates: List[str]) -> Optio
 
 def normalize_record_fields(
     raw_doc: Dict[str, Any],
-    source_file: str = "MongoDB",
+    source_file: Optional[str] = None,
     source_row: Any = None
 ) -> Dict[str, Any]:
     """
@@ -349,13 +349,30 @@ def normalize_record_fields(
     contact_source_display = str(contact_source).strip() if contact_source else "Not Available"
 
     # 15. Source Metadata
-    resolved_source_file = (
-        raw_doc.get("dataset_name")
-        or raw_doc.get("source_file")
+    from ..database import get_database_name
+    db_name = get_database_name()
+
+    raw_s_file = (
+        raw_doc.get("source_file")
         or data.get("Source File")
-        or (f"{data.get('Source Sheets')}.xlsx" if data.get("Source Sheets") and " " not in str(data.get("Source Sheets")) else None)
+        or data.get("source_file")
+        or data.get("source_filename")
+        or data.get("Source_File")
+        or data.get("sourcefile")
+        or data.get("file_name")
+        or data.get("filename")
+        or raw_doc.get("dataset_name")
         or source_file
     )
+    if raw_s_file:
+        s_clean = str(raw_s_file).strip()
+        if s_clean.lower() in ("mongodb", "mongodb atlas", "dataset_records", "none", "not available", "null") or s_clean.startswith("MongoDB:"):
+            resolved_source_file = None
+        else:
+            resolved_source_file = s_clean
+    else:
+        resolved_source_file = None
+
     resolved_source_row = raw_doc.get("source_row")
     if resolved_source_row is None and raw_doc.get("record_index") is not None:
         try:
@@ -367,8 +384,9 @@ def normalize_record_fields(
 
     resolved_collection = (
         raw_doc.get("source_collection")
-        or (source_file.replace("MongoDB: ", "") if "MongoDB: " in str(source_file) else None)
-        or ("dataset_records" if raw_doc.get("dataset_id") else "metrology")
+        or (source_file.replace("MongoDB: ", "") if source_file and "MongoDB: " in str(source_file) else None)
+        or ("dataset_records" if raw_doc.get("dataset_id") else None)
+        or "default"
     )
     resolved_sheet = (
         raw_doc.get("sheet_name")
@@ -377,7 +395,7 @@ def normalize_record_fields(
         or data.get("Source Sheets")
         or None
     )
-    resolved_db_source = raw_doc.get("database_source") or "MongoDB Atlas"
+    resolved_db_source = raw_doc.get("database_source") or raw_doc.get("database") or db_name
 
     # 16. Build clean source_fields representation containing ONLY original source columns
     source_fields = {}

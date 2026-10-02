@@ -4,8 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from .database import check_db_connection
 from .services.mongo_dataset import ensure_dataset_indexes, list_datasets
+from .services.auth import ensure_user_indexes
 from .routes.chat import router as chat_router
-from .routes.datasets import router as datasets_router
+from .routes.datasets import router as datasets_router, alias_router
+from .routes.auth import router as auth_router
 from .schemas import HealthResponse
 
 load_dotenv()
@@ -35,19 +37,22 @@ app.add_middleware(
 )
 
 # Register routers
+app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(datasets_router)
+app.include_router(alias_router)
 
 
 @app.on_event("startup")
 def on_startup():
-    """Verify MongoDB Cloud connection and ensure indexes on startup."""
+    """Verify MongoDB Cloud connection, ensure indexes on startup."""
     print("=" * 60)
-    print("Initializing Calispec AI Search Backend (MongoDB + Private Search)")
+    print("Initializing Calispec AI Search Backend (MongoDB + Private Search + RBAC)")
     db_connected, msg = check_db_connection()
     if db_connected:
         print(f"[OK] {msg}")
         ensure_dataset_indexes()
+        ensure_user_indexes()
         datasets = list_datasets()
         print(f"[INFO] Active Uploaded Datasets: {len(datasets)}")
     else:

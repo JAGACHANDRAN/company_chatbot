@@ -1,7 +1,7 @@
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pymongo.collection import Collection
-from ..database import get_db
+from ..database import get_db, get_database_name
 from ..schemas import ChatRequest, ChatResponse, QueryIntent, LookupResult
 from ..services.query_understanding import parse_query_understanding, fallback_query_understanding, StructuredQuery
 from ..services.query_router import route_query
@@ -24,12 +24,13 @@ def format_api_sources_and_records(final_records: List[dict]):
     source_groups = group_records_by_source(final_records)
     formatted_sources = []
     display_records = []
+    default_db = get_database_name()
 
     for src in source_groups:
-        s_file = src.get("source_file", "")
+        s_file = src.get("source_file") or None
         s_sheet = src.get("source_sheet")
-        s_col = src.get("source_collection", "dataset_records")
-        db_src = src.get("database_source", "MongoDB Atlas")
+        s_col = src.get("source_collection") or "default"
+        db_src = src.get("database_source") or default_db
 
         clean_src_records = []
         for r in src.get("records", []):
@@ -38,24 +39,44 @@ def format_api_sources_and_records(final_records: List[dict]):
 
             display_rec = {
                 "dataset": s_col,
+                "source_collection": s_col,
                 "database": db_src,
-                "source_file": s_file,
+                "database_source": db_src,
             }
+            if s_file:
+                display_rec["source_file"] = s_file
             if s_sheet and s_sheet != "Not Available":
                 display_rec["source_sheet"] = s_sheet
             if s_row:
                 display_rec["source_row"] = s_row
 
             display_rec.update(sf)
+
+            # Ensure LinkedIn column is explicitly preserved if available in record
+            raw_lk = (
+                sf.get("LinkedIn")
+                or sf.get("LinkedIn URL")
+                or sf.get("linkedin")
+                or sf.get("linkedin_url")
+                or r.get("linkedin_url")
+                or r.get("linkedin")
+            )
+            if raw_lk and str(raw_lk).strip().lower() not in ("none", "null", "not available", ""):
+                display_rec["LinkedIn"] = str(raw_lk).strip()
+                sf["LinkedIn"] = str(raw_lk).strip()
+
             clean_src_records.append(sf)
             display_records.append(display_rec)
 
         s_entry = {
             "dataset": s_col,
+            "source_collection": s_col,
             "database": db_src,
-            "source_file": s_file,
+            "database_source": db_src,
             "records": clean_src_records
         }
+        if s_file:
+            s_entry["source_file"] = s_file
         if s_sheet and s_sheet != "Not Available":
             s_entry["source_sheet"] = s_sheet
         if src.get("records"):
@@ -65,8 +86,8 @@ def format_api_sources_and_records(final_records: List[dict]):
 
         formatted_sources.append(s_entry)
 
-    top_dataset = source_groups[0].get("source_collection", "dataset_records") if source_groups else "dataset_records"
-    top_db = source_groups[0].get("database_source", "MongoDB Atlas") if source_groups else "MongoDB Atlas"
+    top_dataset = source_groups[0].get("source_collection", "default") if source_groups else "default"
+    top_db = source_groups[0].get("database_source", default_db) if source_groups else default_db
 
     return formatted_sources, display_records, top_dataset, top_db
 
@@ -132,13 +153,20 @@ async def chat_search(request: ChatRequest, collections: List[Collection] = Depe
         single_ds = get_dataset(dataset_id)
         display_dataset_name = single_ds.get("filename", dataset_id) if single_ds else dataset_id
     else:
-        matched_sources = list(dict.fromkeys([r.get("source_file") for r in final_records if r.get("source_file") and r.get("source_file") != "Not Available"]))
+        matched_sources = list(dict.fromkeys([
+            r.get("source_file") for r in final_records 
+            if r.get("source_file") and str(r.get("source_file")).strip() not in ("Not Available", "MongoDB", "MongoDB Atlas")
+        ]))
         if len(matched_sources) == 1:
             display_dataset_name = matched_sources[0]
         elif len(matched_sources) > 1:
             display_dataset_name = f"{len(matched_sources)} sources ({', '.join(matched_sources[:3])}{'...' if len(matched_sources) > 3 else ''})"
         else:
-            display_dataset_name = "All Uploaded Datasets & Database"
+            matched_cols = list(dict.fromkeys([r.get("source_collection") for r in final_records if r.get("source_collection")]))
+            if matched_cols:
+                display_dataset_name = f"{get_database_name()} ({', '.join(matched_cols)})"
+            else:
+                display_dataset_name = get_database_name()
 
     if final_records:
         formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(final_records)
@@ -156,14 +184,15 @@ async def chat_search(request: ChatRequest, collections: List[Collection] = Depe
             message=final_answer
         )
     else:
+        db_name = get_database_name()
         return ChatResponse(
             success=True,
             found=False,
             count=0,
             dataset_id=dataset_id,
             dataset_name=display_dataset_name,
-            database="MongoDB Atlas",
-            dataset="dataset_records",
+            database=db_name,
+            dataset="default",
             sources=[],
             data=[],
             query_intent=structured_query.model_dump(),
@@ -231,14 +260,15 @@ async def direct_search(
             message=final_answer
         )
     else:
+        db_name = get_database_name()
         return ChatResponse(
             success=True,
             found=False,
             count=0,
             dataset_id=target_dataset,
             dataset_name="MongoDB Search",
-            database="MongoDB Atlas",
-            dataset="dataset_records",
+            database=db_name,
+            dataset="default",
             sources=[],
             data=[],
             query_intent=structured_query.model_dump(),

@@ -1,5 +1,5 @@
 from typing import Optional, List
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
 from ..schemas import (
     DatasetUploadResponse,
     DatasetInspectResponse,
@@ -15,18 +15,25 @@ from ..services.mongo_dataset import (
     delete_dataset,
     get_dataset_sample
 )
+from ..services.auth import require_role, ROLE_DATA_UPLOADER
+
+# Role guards
+require_uploader = require_role(ROLE_DATA_UPLOADER, "You do not have permission to upload files.")
+require_deleter = require_role(ROLE_DATA_UPLOADER, "You do not have permission to delete datasets.")
 
 router = APIRouter(prefix="/api/datasets", tags=["Dataset Management & Upload"])
+alias_router = APIRouter(prefix="/api", tags=["Upload Alias"])
 
 
-@router.post("/inspect", response_model=DatasetInspectResponse)
+@router.post("/inspect", response_model=DatasetInspectResponse, dependencies=[Depends(require_uploader)])
 async def inspect_dataset_file(
     file: UploadFile = File(...),
-    sheet_name: Optional[str] = Form(None)
+    sheet_name: Optional[str] = Form(None),
+    current_user: dict = Depends(require_uploader)
 ):
     """
     Inspects an uploaded data file without saving to database.
-    Useful for multi-sheet Excel files so the user can select which worksheet to import.
+    Requires DATA_UPLOADER role. Rejects unauthorized attempts with HTTP 403 / 401.
     """
     filename = file.filename or "uploaded_data"
     try:
@@ -55,23 +62,29 @@ async def inspect_dataset_file(
         )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[Dataset Inspect Error] {e}")
         raise HTTPException(status_code=500, detail="Could not inspect the file. Please check file format.")
 
 
-@router.post("/upload", response_model=DatasetUploadResponse)
+@router.post("/upload", response_model=DatasetUploadResponse, dependencies=[Depends(require_uploader)])
 async def upload_dataset_file(
     file: UploadFile = File(...),
-    sheet_name: Optional[str] = Form(None)
+    sheet_name: Optional[str] = Form(None),
+    current_user: dict = Depends(require_uploader)
 ):
     """
     Main Data Upload Endpoint.
-    1. Receives file (.csv, .xlsx, .xls, .json, .xml, .txt).
-    2. Detects file type and securely parses records.
-    3. Normalizes columns and infers schema.
-    4. Stores dataset metadata and records in MongoDB.
-    5. Returns dataset summary without exposing private database records in AI prompts.
+    Requires DATA_UPLOADER role.
+    Order of operations:
+    1. Authenticate user.
+    2. Retrieve trusted user role from token.
+    3. Check DATA_UPLOADER permission (done before reading or processing file).
+    4. Clean and parse uploaded file.
+    5. Build schema and normalize fields.
+    6. Store dataset records safely in MongoDB.
     """
     filename = file.filename or "uploaded_dataset"
     try:
@@ -121,9 +134,24 @@ async def upload_dataset_file(
 
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[Dataset Upload Error] {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process and save dataset: {str(e)}")
+
+
+@alias_router.post("/upload", response_model=DatasetUploadResponse, dependencies=[Depends(require_uploader)])
+async def direct_upload_alias(
+    file: UploadFile = File(...),
+    sheet_name: Optional[str] = Form(None),
+    current_user: dict = Depends(require_uploader)
+):
+    """
+    Direct alias endpoint at /api/upload.
+    Enforces identical strict DATA_UPLOADER check and authorization flow.
+    """
+    return await upload_dataset_file(file=file, sheet_name=sheet_name, current_user=current_user)
 
 
 @router.get("", response_model=DatasetListResponse)
@@ -156,9 +184,15 @@ def get_dataset_details(dataset_id: str):
     }
 
 
-@router.delete("/{dataset_id}")
-def delete_dataset_endpoint(dataset_id: str):
-    """Deletes an uploaded dataset and its associated records from MongoDB."""
+@router.delete("/{dataset_id}", dependencies=[Depends(require_deleter)])
+def delete_dataset_endpoint(
+    dataset_id: str,
+    current_user: dict = Depends(require_deleter)
+):
+    """
+    Deletes an uploaded dataset and its associated records from MongoDB.
+    Requires DATA_UPLOADER role.
+    """
     success = delete_dataset(dataset_id)
     if not success:
         raise HTTPException(status_code=404, detail="Dataset not found or could not be deleted.")

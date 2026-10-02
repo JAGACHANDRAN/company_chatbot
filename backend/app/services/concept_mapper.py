@@ -35,6 +35,10 @@ CONCEPT_COLUMNS: Dict[str, List[str]] = {
         "contact_number", "phone", "phone_number", "landline_telephone",
         "landline", "telephone"
     ],
+    "linkedin": [
+        "LinkedIn", "LinkedIn URL", "LinkedIn Profile", "Profile URL",
+        "linkedin", "linkedin_url", "linkedin_profile", "profile_url"
+    ],
 }
 
 # Suffixes stripped for company name normalization

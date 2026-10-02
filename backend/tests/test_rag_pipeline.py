@@ -302,21 +302,20 @@ class TestRAGPipeline(unittest.TestCase):
         self.assertEqual(groups[0]["source_file"], "file_a.xlsx")
         self.assertEqual(groups[1]["source_file"], "file_c.xlsx")
 
-        # Test deterministic output shows both source groups separated by --- without SOURCE 1 / SOURCE 2
+        # Test deterministic output preserves source file association under STRICT RESPONSE FORMATTER rules
         sq = fallback_query_understanding("Find TVS")
         ans = generate_deterministic_answer("Find TVS", sq, records)
         self.assertNotIn("SOURCE 1", ans)
         self.assertNotIn("SOURCE 2", ans)
-        self.assertIn("---", ans)
-        self.assertIn("**Source File: file_a.xlsx**", ans)
-        self.assertIn("**Source File: file_c.xlsx**", ans)
-        self.assertIn("Company Name", ans)
+        self.assertIn("Source File: file_a.xlsx", ans)
+        self.assertIn("Source File: file_c.xlsx", ans)
+        self.assertIn("Company Name: TVS", ans)
+        self.assertIn("Contact Person 1:", ans)
         self.assertIn("Ravi", ans)
-        self.assertIn("Contact Person", ans)
         self.assertIn("Kumar", ans)
 
     def test_same_company_three_files_different_schemas(self):
-        """Same company in 3 files with different schemas must preserve each source's columns."""
+        """Same company in 3 files with different schemas must preserve each source's association."""
         from app.services.retrieval_service import group_records_by_source
         records = [
             {
@@ -346,11 +345,14 @@ class TestRAGPipeline(unittest.TestCase):
         self.assertNotIn("SOURCE 1", ans)
         self.assertNotIn("SOURCE 2", ans)
         self.assertNotIn("SOURCE 3", ans)
-        self.assertIn("---", ans)
-        self.assertIn("Customer Type", ans)
-        self.assertIn("Industrial", ans)
-        self.assertIn("Department", ans)
-        self.assertIn("Production", ans)
+        self.assertIn("Source File: file_a.xlsx", ans)
+        self.assertIn("Source File: file_b.xlsx", ans)
+        self.assertIn("Source File: file_c.xlsx", ans)
+        self.assertIn("Company Name: TVS", ans)
+        # Disallowed/internal database fields must never be displayed
+        self.assertNotIn("Customer Type", ans)
+        self.assertNotIn("Department", ans)
+
 
 
 if __name__ == "__main__":

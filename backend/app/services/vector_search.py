@@ -5,7 +5,7 @@ import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 import httpx
 from dotenv import load_dotenv
-from ..database import get_database, get_collections
+from ..database import get_database, get_collections, get_database_name
 from ..utils.normalization import normalize_record_fields, normalize_text
 from .mongo_dataset import list_datasets, DATASET_RECORDS_COLLECTION
 
@@ -199,6 +199,7 @@ async def execute_vector_search(
         # Search across collection candidates
         try:
             collections = get_collections()
+            db_name = get_database_name()
             for col in collections:
                 col_cursor = col.find().limit(50)
                 for raw_doc in col_cursor:
@@ -206,7 +207,20 @@ async def execute_vector_search(
                     rec_embedding = generate_local_embedding(search_text, dim=len(query_embedding))
                     sim = cosine_similarity(query_embedding, rec_embedding)
                     if sim >= min_similarity:
-                        norm_rec = normalize_record_fields(raw_doc, source_file=f"MongoDB: {col.name}")
+                        doc_copy = dict(raw_doc)
+                        col_db = db_name
+                        doc_copy["database_source"] = col_db
+                        doc_copy["database"] = col_db
+                        doc_copy["source_collection"] = col.name
+                        s_file_col = (
+                            raw_doc.get("source_file")
+                            or raw_doc.get("Source File")
+                            or raw_doc.get("source_filename")
+                            or raw_doc.get("Source_File")
+                            or None
+                        )
+                        doc_copy["source_file"] = s_file_col
+                        norm_rec = normalize_record_fields(doc_copy, source_file=s_file_col)
                         results.append((sim, norm_rec))
         except Exception as e:
             print(f"[Local Vector Search Warning - collections] {e}")

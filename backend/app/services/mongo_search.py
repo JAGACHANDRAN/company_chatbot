@@ -1,7 +1,6 @@
 import re
 from typing import List, Dict, Any, Optional
-from pymongo.collection import Collection
-from ..database import get_database, get_collections
+from ..database import get_database, get_collections, get_database_name
 from ..utils.normalization import (
     normalize_record_fields,
     normalize_company_search_variants,
@@ -255,20 +254,32 @@ def _execute_single_structured_search(
         try:
             ds_col = db[DATASET_RECORDS_COLLECTION]
             ds_cursor = ds_col.find(ds_filter).limit(limit)
-            ds_name_map = {ds.get("dataset_id"): ds.get("filename", "Uploaded Dataset") for ds in uploaded_datasets}
+            ds_name_map = {ds.get("dataset_id"): ds.get("filename") for ds in uploaded_datasets}
             ds_sheet_map = {ds.get("dataset_id"): ds.get("sheet_name") for ds in uploaded_datasets}
+            db_name = get_database_name()
 
             for doc in ds_cursor:
                 ds_id = doc.get("dataset_id", "")
-                ds_name = ds_name_map.get(ds_id, "Uploaded Dataset")
+                ds_name = ds_name_map.get(ds_id)
                 doc_copy = dict(doc)
-                doc_copy["database_source"] = "MongoDB Atlas"
+                doc_copy["database_source"] = db_name
+                doc_copy["database"] = db_name
                 doc_copy["source_collection"] = "dataset_records"
-                doc_copy["source_file"] = ds_name
+                s_file_col = (
+                    doc.get("source_file")
+                    or doc.get("Source File")
+                    or doc.get("source_filename")
+                    or doc.get("Source_File")
+                    or doc.get("file_name")
+                    or doc.get("filename")
+                    or ds_name
+                    or None
+                )
+                doc_copy["source_file"] = s_file_col
                 doc_copy["source_sheet"] = ds_sheet_map.get(ds_id)
                 norm_rec = normalize_record_fields(
                     doc_copy,
-                    source_file=ds_name,
+                    source_file=s_file_col,
                     source_row=doc.get("record_index")
                 )
                 results.append(norm_rec)
@@ -285,17 +296,39 @@ def _execute_single_structured_search(
         if col_filter:
             try:
                 collections = get_collections()
+                db_name = get_database_name()
                 for col in collections:
                     col_cursor = col.find(col_filter).limit(limit // max(1, len(collections)))
                     for raw_doc in col_cursor:
                         doc_copy = dict(raw_doc)
-                        doc_copy["database_source"] = "MongoDB Atlas"
+                        col_db = db_name
+                        doc_copy["database_source"] = col_db
+                        doc_copy["database"] = col_db
                         doc_copy["source_collection"] = col.name
-                        doc_copy["source_file"] = raw_doc.get("Source File") or f"{col.name}.xlsx"
-                        doc_copy["source_sheet"] = raw_doc.get("Source Sheet") or raw_doc.get("Source Sheets")
+                        
+                        # Only take source_file if an actual source file column exists in the document
+                        s_file_col = (
+                            raw_doc.get("source_file")
+                            or raw_doc.get("Source File")
+                            or raw_doc.get("source_filename")
+                            or raw_doc.get("Source_File")
+                            or raw_doc.get("sourcefile")
+                            or raw_doc.get("file_name")
+                            or raw_doc.get("filename")
+                            or None
+                        )
+                        # NEVER fabricate a fake .xlsx name
+                        doc_copy["source_file"] = s_file_col
+                        doc_copy["source_sheet"] = (
+                            raw_doc.get("Source Sheet")
+                            or raw_doc.get("source_sheet")
+                            or raw_doc.get("Source Sheets")
+                            or raw_doc.get("source_sheets")
+                            or None
+                        )
                         norm_rec = normalize_record_fields(
                             doc_copy,
-                            source_file=doc_copy["source_file"],
+                            source_file=s_file_col,
                             source_row=raw_doc.get("source_row") or raw_doc.get("row") or raw_doc.get("record_index")
                         )
                         results.append(norm_rec)

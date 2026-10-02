@@ -124,3 +124,20 @@ class HealthResponse(BaseModel):
     database_connected: bool
     details: Optional[str] = None
     total_uploaded_datasets: Optional[int] = 0
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., description="Authorized user email address")
+    password: str = Field(..., description="User password")
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    email: str
+    role: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse

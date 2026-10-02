@@ -7,6 +7,7 @@ CANONICAL_COLUMNS = [
     "company_name",
     "contact_person",
     "designation",
+    "linkedin_url",
     "mobile_no",
     "landline_telephone",
     "landline_other_no",
@@ -55,6 +56,9 @@ NORMALIZED_KEY_MAP = {
     "source": "sources",
     "remarks": "remarks",
     "remark": "remarks",
+    "linkedin": "linkedin_url",
+    "linkedinurl": "linkedin_url",
+    "linkedinprofile": "linkedin_url",
 }
 
 
@@ -76,6 +80,7 @@ class CompanyRecord(BaseModel):
     company_name: Optional[str] = None
     contact_person: Optional[str] = None
     designation: Optional[str] = None
+    linkedin_url: Optional[str] = None
     mobile_no: Optional[str] = None
     landline_telephone: Optional[str] = None
     landline_other_no: Optional[str] = None
