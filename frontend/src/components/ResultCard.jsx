@@ -246,10 +246,12 @@ export default function ResultCard({ record, index, onInspect }) {
             MongoDB Source
           </div>
         </div>
-      {/* Source Metadata Header (Requirements 3 & 10) */}
-      {(record.source_file || record.source_row != null || record.source_collection) && (
+      {/* Source Metadata Header */}
+      {(record.source_file || record.source_row != null || record.source_collection || record.database || record.database_source) && (
         <div style={{ fontSize: '11px', fontFamily: 'monospace', padding: '8px 14px', background: '#0f172a', borderBottom: '1px solid rgba(148, 163, 184, 0.15)', color: '#94a3b8', lineHeight: '1.4' }}>
-          <div><strong style={{ color: '#cbd5e1' }}>Dataset:</strong> {record.dataset || record.source_collection || 'dataset_records'} &bull; <strong style={{ color: '#cbd5e1' }}>Database:</strong> {record.database || record.database_source || 'MongoDB Atlas'}</div>
+          <div>
+            <strong style={{ color: '#cbd5e1' }}>Database:</strong> {record.database || record.database_source || 'Database'} &bull; <strong style={{ color: '#cbd5e1' }}>Collection:</strong> {record.source_collection || record.dataset || 'Collection'}
+          </div>
           {record.source_file && (
             <div><strong style={{ color: '#cbd5e1' }}>Source File:</strong> <span style={{ color: '#34d399' }}>{record.source_file}</span>{record.source_row != null && record.source_row !== 'Not Available' ? ` (Row: ${record.source_row})` : ''}</div>
           )}

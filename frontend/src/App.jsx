@@ -3,7 +3,16 @@ import ChatMessage from './components/ChatMessage';
 import Sidebar from './components/Sidebar';
 import FileUploadModal from './components/FileUploadModal';
 import DocumentInspectorModal from './components/DocumentInspectorModal';
-import { sendChatMessage, fetchDatasets, deleteDatasetApi } from './api';
+import CalispecLogo from './components/CalispecLogo';
+import LoginModal from './components/LoginModal';
+import {
+  sendChatMessage,
+  fetchDatasets,
+  deleteDatasetApi,
+  getStoredUser,
+  fetchCurrentUser,
+  logoutApi
+} from './api';
 
 const STORAGE_KEY = 'calispec_chat_history_v2';
 const ACTIVE_DATASET_KEY = 'calispec_active_dataset_id';
@@ -40,17 +49,45 @@ export default function App() {
   const recognitionRef = useRef(null);
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
-  const [isScrolled, setIsScrolled] = useState(false);
 
-  const handleScroll = (e) => {
-    const top = e.currentTarget.scrollTop;
-    setIsScrolled(top > 80);
+  // Authenticated user state & profile dropdown
+  const [currentUser, setCurrentUser] = useState(() => getStoredUser());
+  const isDataUploader = currentUser?.role === 'DATA_UPLOADER';
+  const isChatUser = currentUser?.role === 'CHAT_USER';
+
+  const profilePanelRef = useRef(null);
+  const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+
+  // Check auth and verify token validity on mount
+  useEffect(() => {
+    async function initAuth() {
+      const user = await fetchCurrentUser();
+      if (user) {
+        setCurrentUser(user);
+      } else {
+        setCurrentUser(null);
+      }
+    }
+    initAuth();
+  }, []);
+
+  const handleLoginSuccess = (user) => {
+    setCurrentUser(user);
+    setLoginModalOpen(false);
+    loadDatasets();
+  };
+
+  const handleLogout = async () => {
+    await logoutApi();
+    setCurrentUser(null);
+    setUploadModalOpen(false);
   };
 
   // Fetch uploaded datasets on mount
   useEffect(() => {
     loadDatasets();
-  }, []);
+  }, [currentUser]);
 
   const loadDatasets = async () => {
     try {
@@ -89,11 +126,14 @@ export default function App() {
     }
   }, [messages, loading]);
 
-  // Close dropdown on outside click
+  // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (docsPanelRef.current && !docsPanelRef.current.contains(e.target)) {
         setDocsDropdownOpen(false);
+      }
+      if (profilePanelRef.current && !profilePanelRef.current.contains(e.target)) {
+        setProfileDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -105,7 +145,6 @@ export default function App() {
     setMessages([]);
     setInput('');
     setSidebarOpen(false);
-    setIsScrolled(false);
     if (scrollViewRef.current) {
       scrollViewRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -137,6 +176,7 @@ export default function App() {
   const handleUploadSuccess = (newDataset) => {
     loadDatasets();
     setActiveDatasetId('all');
+    setDocsDropdownOpen(false);
 
     const announcementMsg = {
       id: `assistant-dataset-ready-${Date.now()}`,
@@ -303,218 +343,222 @@ export default function App() {
     }
   };
 
-  const activeDatasetObj = datasets.find((d) => d.dataset_id === activeDatasetId);
   const isAll = !activeDatasetId || activeDatasetId === 'all' || activeDatasetId === 'default';
 
   return (
-    <div className="ambient-bg text-slate-100 font-body-md antialiased h-full flex flex-col overflow-hidden relative">
-      {/* Grid Matrix Texture */}
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,#0e22380d_1px,transparent_1px),linear-gradient(to_bottom,#0e22380d_1px,transparent_1px)] bg-[size:4rem_4rem] pointer-events-none z-0"></div>
+    <div className="bg-[#f8fafc] text-slate-800 antialiased h-screen flex flex-col justify-between overflow-hidden selection:bg-sky-100 selection:text-sky-900 relative">
+      {/* Background Layer: Tech Grid & Ambient AI Metrology Glow */}
+      <div className="absolute inset-0 tech-grid-pattern pointer-events-none z-0"></div>
+      <div className="absolute inset-0 ambient-glow pointer-events-none z-0"></div>
+      <div className="absolute inset-0 calibration-rings pointer-events-none z-0"></div>
 
-      {/* Top Navigation Bar */}
-      <header className="w-full px-6 py-4 flex items-center justify-between z-30 relative border-b border-cyan-950/40 bg-[#060d1a]/80 backdrop-blur-lg shrink-0">
-        {/* Left Navigation Pill */}
-        <div className="flex items-center">
+      {/* BEGIN: TopHeader */}
+      <header className="relative z-40 w-full px-6 py-4 flex items-center justify-between border-b border-sky-100/70 bg-white/70 backdrop-blur-md shrink-0">
+        {/* Left Navigation: Hamburger Menu & Authentic CALISPEC Logo */}
+        <div className="flex items-center space-x-5">
+          {/* Circular Hamburger Button */}
           <button
             aria-label="Open Navigation Menu"
-            className="flex items-center gap-2.5 px-4 py-1.5 rounded-full border border-slate-700/60 bg-[#060d1a]/80 hover:border-cyan-500/50 hover:bg-[#0c1a2d] transition-all text-xs font-medium tracking-wide text-slate-300 shadow-sm hover:shadow-[0_0_15px_rgba(56,189,248,0.3)]"
-            onClick={() => setSidebarOpen(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 bg-white border border-slate-200 hover:text-sky-600 hover:border-sky-200 hover:bg-sky-50/50 transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+            data-purpose="toggle-sidebar"
             type="button"
+            onClick={() => setSidebarOpen((prev) => !prev)}
           >
-            <span className="material-symbols-outlined text-sm text-cyan-400 group-hover:scale-110 transition-transform">
-              menu
-            </span>
-            <span>Menu</span>
-          </button>
-        </div>
-
-
-        {/* Center: Scroll-triggered sticky CALISPEC logo header (appears smoothly only when scrolled down) */}
-        <div
-          className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center cursor-pointer transition-all duration-300 ease-in-out z-20 ${
-            isScrolled
-              ? 'opacity-100 scale-100 translate-y-[-50%] pointer-events-auto'
-              : 'opacity-0 scale-95 translate-y-[-40%] pointer-events-none'
-          }`}
-          onClick={handleNewChat}
-          title="CALISPEC - Precision Metrology AI"
-        >
-          <div className="flex items-center gap-2.5 sm:gap-3 select-none">
-            <div className="relative flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 flex-shrink-0">
-              <svg viewBox="0 0 100 100" className="w-8 h-8 sm:w-10 sm:h-10 text-cyan-400 drop-shadow-[0_0_12px_rgba(0,242,254,0.95)]" fill="none" stroke="currentColor">
-                <path d="M50 18a32 32 0 1 0 32 32" strokeWidth="8" strokeLinecap="round" strokeDasharray="3 7"></path>
-                <path d="M50 8 v10 M50 82 v10 M8 50 h10 M82 50 h10 M20 20 l7 7 M73 73 l7 7 M20 80 l7 -7 M73 27 l7 -7" strokeWidth="7" strokeLinecap="round"></path>
-                <circle cx="50" cy="50" r="8" fill="#f97316" stroke="none"></circle>
-                <path d="M50 50 L68 34" stroke="#f97316" strokeWidth="4.5" strokeLinecap="round"></path>
-              </svg>
-            </div>
-            <div className="flex flex-col justify-center">
-              <div className="flex items-baseline gap-1 leading-none">
-                <span className="font-headline-xl text-lg sm:text-xl font-bold tracking-widest text-cyan-400 drop-shadow-[0_0_12px_rgba(0,242,254,0.6)]">CALISPEC</span>
-                <span className="text-[10px] font-bold text-cyan-300 font-label-sm">™</span>
-              </div>
-              <span className="text-[10px] text-amber-500 font-medium tracking-normal leading-tight mt-0.5">Proficient and Nimble</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Quick Actions */}
-        <div className="flex items-center gap-3">
-          {/* Upload Docs Action */}
-          <button
-            className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-slate-700/60 bg-[#060d1a]/80 hover:border-cyan-500/50 hover:bg-[#0c1a2d] transition-all text-xs font-medium text-slate-300 hover:text-white"
-            onClick={() => setUploadModalOpen(true)}
-            type="button"
-          >
-            <span className="material-symbols-outlined text-sm text-cyan-400">cloud_upload</span>
-            <span>Upload Docs</span>
-          </button>
-
-          {/* Database Document Counter Pill & Dropdown container */}
-          <div className="relative" ref={docsPanelRef}>
-            <button
-              className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-slate-700/60 bg-[#060d1a]/80 hover:border-cyan-500/50 hover:bg-[#0c1a2d] transition-all text-xs font-medium text-slate-300 hover:text-white"
-              onClick={() => setDocsDropdownOpen(!docsDropdownOpen)}
-              type="button"
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
             >
-              <span className="material-symbols-outlined text-sm text-cyan-400">database</span>
-              <span>DB Documents</span>
-              <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-cyan-950/80 border border-cyan-800/60 text-cyan-300 ml-0.5">
-                {datasets.length} Docs
-              </span>
-              <span
-                className={`material-symbols-outlined text-[16px] text-slate-400 transition-transform duration-200 ${
-                  docsDropdownOpen ? 'rotate-180' : ''
-                }`}
-              >
-                expand_more
-              </span>
-            </button>
+              <line x1="4" x2="20" y1="6" y2="6"></line>
+              <line x1="4" x2="20" y1="12" y2="12"></line>
+              <line x1="4" x2="20" y1="18" y2="18"></line>
+            </svg>
+          </button>
 
-            {/* Dropdown Menu */}
-            {docsDropdownOpen && (
-              <div
-                className="absolute right-0 mt-2.5 w-96 rounded-2xl bg-[#08111e]/95 border border-cyan-500/40 shadow-[0_12px_40px_rgba(0,0,0,0.85),0_0_25px_rgba(0,242,254,0.15)] backdrop-blur-xl p-4 z-50 animate-fadeIn"
-                id="db-docs-panel"
-              >
-                <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800/80">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-cyan-400 text-base">folder_open</span>
-                    <span className="text-xs font-semibold text-slate-100 tracking-wide uppercase font-headline-xl">
-                      Indexed Repository
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-label-sm text-cyan-400/90 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-500/20">
-                    Synced
+          {/* Authentic CALISPEC Logo */}
+          <a
+            className="flex items-center cursor-pointer select-none transition-transform hover:opacity-95"
+            data-purpose="brand-logo"
+            href="#"
+            onClick={handleNewChat}
+          >
+            <img
+              alt="CALISPEC - Proficient and Nimble"
+              className="h-10 sm:h-11 md:h-12 w-auto object-contain select-none"
+              src="/calispec-logo-transparent.png"
+            />
+          </a>
+        </div>
+
+        {/* Right Navigation: Uploaded Documents Indicator & User Profile */}
+        <div className="flex items-center space-x-2.5">
+          <div className="relative z-50" ref={docsPanelRef}>
+            <div
+              className="flex items-center space-x-2.5 px-4 py-2 rounded-full border border-sky-200/80 bg-white/90 text-slate-700 hover:border-sky-300 transition-all cursor-pointer shadow-sm group select-none"
+              data-purpose="documents-status-pill"
+              onClick={() => setDocsDropdownOpen(!docsDropdownOpen)}
+            >
+            {/* Database Icon */}
+            <svg
+              className="w-4 h-4 text-sky-600 group-hover:scale-105 transition-transform"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+            </svg>
+            {/* Status Label */}
+            <span className="text-sm font-medium tracking-tight">Uploaded Documents</span>
+            {/* Indexed Badge */}
+            <span className="text-xs px-2.5 py-0.5 font-semibold text-sky-700 bg-sky-100 rounded-full">
+              {datasets.length > 0 ? `${datasets.length} Indexed` : 'Indexed'}
+            </span>
+            {/* Dropdown Chevron */}
+            <svg
+              className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ml-0.5 ${
+                docsDropdownOpen ? 'rotate-180' : ''
+              }`}
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2.5"
+              viewBox="0 0 24 24"
+            >
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+
+          {/* Dropdown Menu */}
+          {docsDropdownOpen && (
+            <div
+              className="absolute right-0 mt-2.5 w-96 rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl p-4 z-50 animate-fadeIn"
+              id="db-docs-panel"
+            >
+              <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-sky-600 text-base">folder_open</span>
+                  <span className="text-xs font-bold text-slate-800 tracking-wide uppercase font-headline-xl">
+                    Indexed Repository
                   </span>
                 </div>
+                <span className="text-[10px] font-label-sm text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 font-semibold">
+                  Synced
+                </span>
+              </div>
 
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                  {/* All Datasets Item */}
-                  <div
-                    className={`flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer ${
-                      isAll
-                        ? 'bg-cyan-950/50 border border-cyan-500/50 shadow-[0_0_12px_rgba(0,242,254,0.15)]'
-                        : 'bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40'
-                    }`}
-                    onClick={() => {
-                      setActiveDatasetId('all');
-                      setDocsDropdownOpen(false);
-                    }}
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="material-symbols-outlined text-cyan-400 text-lg flex-shrink-0">
-                        layers
-                      </span>
-                      <div className="truncate">
-                        <p className="text-xs font-medium text-slate-200 truncate">
-                          All Uploaded Datasets (Default)
-                        </p>
-                        <p className="text-[10px] font-label-sm text-slate-400">
-                          {datasets.length > 0
-                            ? `Search across all ${datasets.length} files & Calispec database`
-                            : 'Search Calispec MongoDB Collections'}
-                        </p>
-                      </div>
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {/* All Datasets option */}
+                <div
+                  className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
+                    isAll
+                      ? 'bg-sky-50/80 border-sky-300 shadow-xs'
+                      : 'bg-slate-50 hover:bg-sky-50/50 border-slate-200/80 hover:border-sky-300'
+                  }`}
+                  onClick={() => {
+                    setActiveDatasetId('all');
+                    setDocsDropdownOpen(false);
+                  }}
+                >
+                  <div className="flex items-center gap-2.5 truncate">
+                    <span className="material-symbols-outlined text-sky-600 text-lg flex-shrink-0">
+                      layers
+                    </span>
+                    <div className="truncate">
+                      <p className="text-xs font-semibold text-slate-800 truncate">
+                        All Uploaded Datasets (Default)
+                      </p>
+                      <p className="text-[10px] font-label-sm text-slate-500">
+                        Search across all {datasets.length} files &amp; collections
+                      </p>
                     </div>
-                    {isAll && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 font-label-sm">
-                        Active
-                      </span>
-                    )}
                   </div>
+                  {isAll && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-700 font-label-sm font-semibold">
+                      Active
+                    </span>
+                  )}
+                </div>
 
-                  {/* Individual Datasets */}
-                  {datasets.map((d) => {
-                    const isSelected = activeDatasetId === d.dataset_id;
-                    const ext = d.original_type || d.filename?.split('.').pop() || 'csv';
-                    const icon =
-                      ext === 'pdf'
-                        ? 'picture_as_pdf'
-                        : ext === 'json'
-                        ? 'data_object'
-                        : ext === 'xml'
-                        ? 'code'
-                        : 'table_chart';
-                    const iconColor =
-                      ext === 'pdf'
-                        ? 'text-rose-400'
-                        : ext === 'json'
-                        ? 'text-cyan-400'
-                        : ext === 'xml'
-                        ? 'text-amber-400'
-                        : 'text-emerald-400';
+                {datasets.map((d) => {
+                  const isSelected = activeDatasetId === d.dataset_id;
+                  const ext = d.original_type || d.filename?.split('.').pop() || 'csv';
+                  const icon =
+                    ext === 'pdf'
+                      ? 'picture_as_pdf'
+                      : ext === 'json'
+                      ? 'data_object'
+                      : ext === 'xml'
+                      ? 'code'
+                      : 'table_chart';
+                  const iconColor =
+                    ext === 'pdf'
+                      ? 'text-rose-500'
+                      : ext === 'json'
+                      ? 'text-sky-600'
+                      : ext === 'xml'
+                      ? 'text-amber-600'
+                      : 'text-emerald-600';
 
-                    return (
-                      <div
-                        key={d.dataset_id}
-                        className={`group flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-cyan-950/50 border border-cyan-500/50 shadow-[0_0_12px_rgba(0,242,254,0.15)]'
-                            : 'bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40'
-                        }`}
-                        onClick={() => {
-                          setActiveDatasetId(d.dataset_id);
-                          setDocsDropdownOpen(false);
-                        }}
-                      >
-                        <div className="flex items-center gap-2.5 truncate flex-1 min-w-0 pr-1">
-                          <span className={`material-symbols-outlined ${iconColor} text-lg flex-shrink-0`}>
-                            {icon}
-                          </span>
-                          <div className="truncate">
-                            <p className="text-xs font-medium text-slate-200 truncate">
-                              {d.filename}
-                            </p>
-                            <p className="text-[10px] font-label-sm text-slate-500">
-                              {d.record_count?.toLocaleString()} rows • .{ext}
-                            </p>
-                          </div>
+                  return (
+                    <div
+                      key={d.dataset_id}
+                      className={`group flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-sky-50/80 border-sky-300 shadow-xs'
+                          : 'bg-slate-50 hover:bg-sky-50/50 border-slate-200/80 hover:border-sky-300'
+                      }`}
+                      onClick={() => {
+                        setActiveDatasetId(d.dataset_id);
+                        setDocsDropdownOpen(false);
+                      }}
+                    >
+                      <div className="flex items-center gap-2.5 truncate flex-1 min-w-0 pr-1">
+                        <span className={`material-symbols-outlined ${iconColor} text-lg flex-shrink-0`}>
+                          {icon}
+                        </span>
+                        <div className="truncate">
+                          <p className="text-xs font-semibold text-slate-800 truncate">
+                            {d.filename}
+                          </p>
+                          <p className="text-[10px] font-label-sm text-slate-500">
+                            {d.record_count?.toLocaleString()} rows • .{ext}
+                          </p>
                         </div>
+                      </div>
 
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {isSelected && confirmDeleteId !== d.dataset_id && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/70 border border-emerald-500/40 text-emerald-400 font-label-sm">
-                              Active
-                            </span>
-                          )}
-                          
-                          {confirmDeleteId === d.dataset_id ? (
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {isSelected && confirmDeleteId !== d.dataset_id && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-700 font-label-sm font-semibold">
+                            Active
+                          </span>
+                        )}
+
+                        {/* Delete Dataset Button (Restricted to DATA_UPLOADER) */}
+                        {isDataUploader && (
+                          confirmDeleteId === d.dataset_id ? (
                             <div className="flex items-center gap-1 animate-fadeIn">
                               <button
                                 type="button"
-                                className="p-1 text-xs text-rose-400 hover:text-rose-300 bg-rose-950/50 rounded transition-all"
+                                className="p-1 text-xs text-rose-600 hover:text-rose-700 bg-rose-50 rounded border border-rose-200 transition-all font-medium"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleDeleteDataset(d.dataset_id);
                                   setConfirmDeleteId(null);
                                 }}
                               >
-                                Confirm
+                                Delete
                               </button>
                               <button
                                 type="button"
-                                className="p-1 text-xs text-slate-400 hover:text-slate-300 bg-slate-800 rounded transition-all"
+                                className="p-1 text-xs text-slate-500 hover:text-slate-700 bg-slate-100 rounded transition-all"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setConfirmDeleteId(null);
@@ -526,7 +570,7 @@ export default function App() {
                           ) : (
                             <button
                               type="button"
-                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-rose-400 transition-all"
+                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all"
                               title="Delete Dataset"
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -535,17 +579,20 @@ export default function App() {
                             >
                               <span className="material-symbols-outlined text-xs">delete</span>
                             </button>
-                          )}
-                        </div>
+                          )
+                        )}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })}
+              </div>
 
-                <div className="mt-3 pt-2.5 border-t border-slate-800/80">
+              {/* Upload Data File Button in Dropdown (Restricted to DATA_UPLOADER) */}
+              {isDataUploader && (
+                <div className="mt-3 pt-2.5 border-t border-slate-100">
                   <button
                     type="button"
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-500/30 text-xs font-medium text-cyan-300 transition-all shadow-sm"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-700 border border-sky-200 transition-all shadow-xs"
                     onClick={() => {
                       setDocsDropdownOpen(false);
                       setUploadModalOpen(true);
@@ -555,163 +602,245 @@ export default function App() {
                     <span>Upload New Data File (.csv, .xlsx, .json, .xml, .txt)</span>
                   </button>
                 </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Round Profile Button & User Dropdown */}
+        <div className="relative z-50" ref={profilePanelRef}>
+          <button
+            type="button"
+            onClick={() => {
+              if (currentUser) {
+                setProfileDropdownOpen(!profileDropdownOpen);
+              } else {
+                setLoginModalOpen(true);
+              }
+            }}
+            className="w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-xs focus:outline-none select-none cursor-pointer"
+            title={currentUser ? `Profile: ${currentUser.email}` : "Sign In as Uploader"}
+          >
+            {currentUser ? (
+              <div className="relative w-10 h-10 rounded-full bg-gradient-to-tr from-sky-600 to-indigo-600 text-white font-bold text-sm flex items-center justify-center border-2 border-white shadow-sm ring-2 ring-sky-200 hover:ring-sky-400 transition-all">
+                {currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U'}
+                {/* Active online dot */}
+                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-white rounded-full"></span>
+              </div>
+            ) : (
+              <div className="w-10 h-10 rounded-full bg-slate-100 hover:bg-sky-50 border border-slate-300 hover:border-sky-300 text-slate-600 hover:text-sky-600 flex items-center justify-center transition-all shadow-2xs">
+                <span className="material-symbols-outlined text-xl">person</span>
               </div>
             )}
-          </div>
-        </div>
-      </header>
+          </button>
 
-      {/* Slide-out Sidebar Drawer */}
-      <Sidebar
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        onNewChat={handleNewChat}
-        chatHistory={chatHistory}
-        currentChatId={currentChatId}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
-        onClearHistory={handleClearHistory}
-      />
-
-      {/* Main Central Area with Active Chat Conversation */}
-      <main
-        className="flex-1 overflow-y-auto flex flex-col items-center px-4 md:px-8 pt-2 pb-64 z-10 w-full"
-        id="main-scroll-view"
-        ref={scrollViewRef}
-        onScroll={handleScroll}
-      >
-        <div className="w-full max-w-4xl flex flex-col items-center">
-          {/* Futuristic HUD Emblem & Greeting Header */}
-          <section className="flex flex-col items-center text-center w-full group/center select-none pt-2 pb-6">
-            {/* Center Holographic Orb / Glow Visual System */}
+          {/* Profile Dropdown Menu (Only shown when user clicks their round profile) */}
+          {currentUser && profileDropdownOpen && (
             <div
-              className="relative mb-5 flex items-center justify-center animate-float-center cursor-pointer"
-              onClick={handleNewChat}
-              title="Reset Chat Session"
+              className="absolute right-0 mt-2.5 w-64 rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.15)] p-4 z-50 animate-fadeIn"
             >
-              {/* Ambient Multi-Color Volumetric Aura */}
-              <div className="absolute -inset-24 bg-gradient-to-tr from-cyan-500/25 via-sky-500/20 to-orange-500/15 blur-3xl rounded-full pointer-events-none group-hover/center:blur-[60px] group-hover/center:opacity-100 transition-all duration-700 opacity-60"></div>
-              {/* Rotating Conic Beam Sweep Effect */}
-              <div className="absolute -inset-16 rounded-full animate-sweep-beam opacity-30 group-hover/center:opacity-75 transition-opacity duration-500 pointer-events-none"></div>
-              {/* Concentric Kinetic Energy Rings */}
-              <div className="absolute -inset-20 rounded-full border border-dashed border-cyan-400/20 animate-spin-clockwise pointer-events-none group-hover/center:border-cyan-400/50 group-hover/center:scale-105 transition-all duration-700"></div>
-              <div className="absolute -inset-12 rounded-full border border-teal-400/30 animate-spin-counter pointer-events-none group-hover/center:border-teal-300/60 transition-all duration-700"></div>
-              <div className="absolute -inset-6 rounded-full border border-cyan-300/40 animate-pulse-aura pointer-events-none"></div>
-              {/* Orbital Particle Photons */}
-              <div className="absolute w-2.5 h-2.5 rounded-full bg-cyan-300 shadow-[0_0_12px_#00f2fe] orbit-dot-1 pointer-events-none"></div>
-              <div className="absolute w-2 h-2 rounded-full bg-orange-400 shadow-[0_0_10px_#f97316] orbit-dot-2 pointer-events-none"></div>
+              <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-600 to-indigo-600 text-white font-bold text-sm flex items-center justify-center shrink-0 shadow-sm">
+                  {currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U'}
+                </div>
+                <div className="truncate flex-1 min-w-0">
+                  <p className="text-xs font-bold text-slate-800 truncate" title={currentUser.email}>
+                    {currentUser.email}
+                  </p>
+                  <span
+                    className={`inline-block text-[9px] font-bold px-2 py-0.5 mt-0.5 rounded-full uppercase tracking-wider ${
+                      isDataUploader
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : 'bg-sky-100 text-sky-800 border border-sky-300'
+                    }`}
+                  >
+                    {isDataUploader ? 'DATA UPLOADER' : 'CHAT USER'}
+                  </span>
+                </div>
+              </div>
 
-              {/* Seamless Futuristic HUD Display Pod for Logo */}
-              <div className="relative z-10 px-8 py-3.5 sm:px-10 sm:py-4 rounded-3xl bg-slate-950/80 border border-cyan-500/40 backdrop-blur-2xl shadow-[0_0_35px_rgba(0,242,254,0.35),inset_0_0_20px_rgba(56,189,248,0.2)] group-hover/center:border-cyan-300 group-hover/center:shadow-[0_0_55px_rgba(0,242,254,0.65),inset_0_0_25px_rgba(0,242,254,0.35)] transition-all duration-500 flex items-center justify-center">
-                <div className="relative max-w-[240px] sm:max-w-[300px] md:max-w-[340px] flex items-center justify-center overflow-hidden py-1 px-3">
-                  <img
-                    alt="CALISPEC - Proficient and Nimble"
-                    className="w-full h-auto object-contain hologram-logo-dark"
-                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuBZSsmZYIs6iqsXtEmYVqi3yx5MJa2L1DBdHezpGWio05WYOnmy06Fv4SHmV6KzRd81TnC1XpZhnxVTWknPFDZmlkHwI5TS8jbGFRzDEcQAiHBREeB0vkF1ncuCc3xMZ5ITetMsT5Rx-AiAWvsiS2qTqcUa5yvKVNQYCazHA3VbLoqRPgEtBfbPEto1T3pFVDRJz6LuXvaDJvvZIp5hOPPqFYwo8dEdpqoCvcfkkbprbQ1PfH1rIwqP9_EAfCuEjtB-8g"
-                    onError={(e) => {
-                      e.currentTarget.src = '/calispec-logo-transparent.png';
-                    }}
-                  />
+              <div className="py-2.5 text-[11px]">
+                {isDataUploader ? (
+                  <span className="flex items-center gap-1.5 text-emerald-700 font-medium">
+                    <span className="material-symbols-outlined text-xs">verified</span>
+                    <span>Upload &amp; dataset management active</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-slate-500">
+                    <span className="material-symbols-outlined text-xs">search</span>
+                    <span>Chat &amp; search access active</span>
+                  </span>
+                )}
+              </div>
+
+              {/* Sign Out Button INSIDE the profile dropdown */}
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProfileDropdownOpen(false);
+                    handleLogout();
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200 hover:border-rose-200 text-xs font-semibold transition-all cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">logout</span>
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      </header>
+      {/* END: TopHeader */}
+
+      {/* BEGIN: Side-by-Side Workspace Layout */}
+      <div className="flex-1 flex overflow-hidden relative z-10 w-full min-h-0">
+        {/* Left Sidebar Menu (Visible when toggled, docked alongside chat) */}
+        {sidebarOpen && (
+          <Sidebar
+            onClose={() => setSidebarOpen(false)}
+            onNewChat={handleNewChat}
+            chatHistory={chatHistory}
+            currentChatId={currentChatId}
+            onSelectChat={handleSelectChat}
+            onDeleteChat={handleDeleteChat}
+            onClearHistory={handleClearHistory}
+          />
+        )}
+
+        {/* Right Chat Column (Fully visible alongside menu, never hidden in background) */}
+        <div className="flex-1 flex flex-col min-w-0 h-full justify-between relative overflow-hidden">
+          {/* BEGIN: MainContentArea */}
+          <main
+            className={`relative z-10 flex-1 flex flex-col items-center px-4 max-w-4xl mx-auto select-none w-full overflow-hidden ${
+              messages.length === 0 ? 'justify-center -mt-10' : 'justify-start pt-2'
+            }`}
+          >
+            <div className="flex flex-col w-full h-full justify-between pb-2">
+              {messages.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 px-4 my-auto">
+                  {/* Main Heading with High-Precision Accent */}
+                  <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-tight">
+                    Search Your <span className="text-[#0284c7] drop-shadow-sm">Business Data</span>
+                  </h1>
+                  {/* Subtitle */}
+                  <p className="text-base sm:text-lg md:text-xl text-slate-500 max-w-2xl mx-auto font-normal leading-relaxed">
+                    Ask questions about companies, people, contacts, locations, departments, and more.
+                  </p>
+                </div>
+              ) : (
+                /* Conversation Scroll Stage */
+                <div
+                  className="w-full flex-1 overflow-y-auto space-y-6 pt-4 pb-6 px-1 md:px-3"
+                  id="main-scroll-view"
+                  ref={scrollViewRef}
+                >
+                  {messages.map((message) => (
+                    <ChatMessage
+                      key={message.id}
+                      message={message}
+                      onInspect={(doc) => setInspectingDoc(doc)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </main>
+          {/* END: MainContentArea */}
+
+          {/* BEGIN: FloatingSearchInputArea */}
+          <footer className="relative z-20 w-full pb-8 sm:pb-10 px-4 sm:px-6 flex justify-center shrink-0">
+            <div className="w-full max-w-3xl">
+              {/* Glow Search Container */}
+              <div
+                className="glow-search-bar bg-white rounded-full flex items-center px-3.5 py-2.5 sm:px-4 sm:py-3"
+                data-purpose="search-box-container"
+              >
+                {/* Upload / Add Document Circular Button (Restricted to DATA_UPLOADER) */}
+                {isDataUploader && (
+                  <button
+                    aria-label="Attach documents or add files"
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:text-sky-600 hover:bg-sky-50 active:scale-95 transition-all duration-150 focus:outline-none"
+                    data-purpose="attachment-button"
+                    type="button"
+                    onClick={() => setUploadModalOpen(true)}
+                  >
+                    <svg className="w-5 h-5 stroke-[2.2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <line x1="12" x2="12" y1="5" y2="19"></line>
+                      <line x1="5" x2="19" y1="12" y2="12"></line>
+                    </svg>
+                  </button>
+                )}
+
+                {/* Text Input Field */}
+                <input
+                  className="flex-1 bg-transparent border-none text-slate-800 placeholder-slate-400 text-base sm:text-lg px-3 focus:outline-none focus:ring-0"
+                  data-purpose="query-input"
+                  placeholder="Type here..."
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleSendMessage();
+                    }
+                  }}
+                />
+
+                {/* Right Side Controls: Microphone & Active Send Arrow */}
+                <div className="flex items-center space-x-1 sm:space-x-2">
+                  {/* Voice Input Button */}
+                  <button
+                    aria-label="Voice input"
+                    className={`w-9 h-9 rounded-full flex items-center justify-center transition-all focus:outline-none ${
+                      isRecording
+                        ? 'bg-rose-100 text-rose-600 animate-pulse'
+                        : 'text-slate-400 hover:text-sky-600 hover:bg-sky-50'
+                    }`}
+                    data-purpose="voice-input-button"
+                    type="button"
+                    onClick={toggleDictation}
+                    title={isRecording ? 'Stop Voice Input' : 'Voice Input'}
+                  >
+                    <svg className="w-5 h-5 stroke-[2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <line x1="12" x2="12" y1="19" y2="23"></line>
+                      <line x1="8" x2="16" y1="23" y2="23"></line>
+                    </svg>
+                  </button>
+
+                  {/* Vibrant Precision Blue Send Button */}
+                  <button
+                    aria-label="Send query"
+                    className="w-10 h-10 rounded-full bg-[#0284c7] hover:bg-[#0369a1] text-white flex items-center justify-center shadow-md shadow-sky-500/25 active:scale-95 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-sky-500/50 disabled:opacity-50"
+                    data-purpose="submit-search-button"
+                    type="button"
+                    disabled={loading}
+                    onClick={() => handleSendMessage()}
+                    title="Send query"
+                  >
+                    <svg className="w-5 h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <line x1="12" x2="12" y1="19" y2="5"></line>
+                      <polyline points="5 12 12 5 19 12"></polyline>
+                    </svg>
+                  </button>
                 </div>
               </div>
             </div>
-
-            {/* Headline with Radiant Cyan Glow */}
-            <h1 className="font-headline-xl text-2xl sm:text-3xl md:text-4xl text-white tracking-tight font-bold max-w-2xl text-center group-hover/center:scale-[1.01] transition-transform duration-300">
-              How can we{' '}
-              <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-sky-300 to-blue-400 drop-shadow-[0_0_25px_rgba(0,242,254,0.6)]">
-                assist you
-              </span>
-              ?
-            </h1>
-          </section>
-
-          {/* Active Conversation Messages Stream */}
-          <section className="flex flex-col space-y-6 w-full max-w-3xl mt-2" id="chat-stream">
-            {messages.map((message) => (
-              <ChatMessage
-                key={message.id}
-                message={message}
-                onInspect={(doc) => setInspectingDoc(doc)}
-              />
-            ))}
-            {/* Dedicated scroll clearance spacer so last message is never covered by bottom input bar */}
-            {messages.length > 0 && (
-              <div className="h-16 w-full shrink-0 pointer-events-none" aria-hidden="true" />
-            )}
-          </section>
-        </div>
-      </main>
-
-      {/* Floating Glassmorphic Glowing Prompt Bar (Proper Medium Size) */}
-      <div className="fixed bottom-4 sm:bottom-6 inset-x-0 z-30 px-4 max-w-2xl mx-auto pointer-events-none">
-        <div className="relative">
-          <div className="absolute -inset-1 bg-gradient-to-r from-blue-600/35 via-cyan-400/40 to-blue-600/35 rounded-full blur-lg opacity-75 group-focus-within:opacity-100 transition-opacity duration-500 animate-pulse pointer-events-none"></div>
-          <div className="pointer-events-auto relative rounded-full bg-slate-950/90 backdrop-blur-2xl border border-cyan-400/50 px-4 py-2 sm:px-5 sm:py-2.5 shadow-[0_0_22px_rgba(0,242,254,0.32),inset_0_1px_2px_rgba(255,255,255,0.3),inset_0_0_15px_rgba(0,242,254,0.15)] transition-all duration-300 focus-within:border-cyan-300 focus-within:shadow-[0_0_32px_rgba(0,242,254,0.55),inset_0_2px_4px_rgba(255,255,255,0.45)] flex items-center gap-2.5">
-            <div className="flex-1 flex items-center min-w-0 pl-1">
-              <input
-                autoComplete="off"
-                className="w-full bg-transparent border-none outline-none font-body-md text-sm sm:text-[15px] text-slate-100 placeholder:text-slate-500 focus:ring-0 focus:outline-none min-w-0 py-0.5"
-                id="prompt-input"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                placeholder={
-                  isRecording
-                    ? 'Listening to voice query...'
-                    : 'Ask about companies, persons, locations, or uploaded datasets...'
-                }
-                type="text"
-              />
-            </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              <button
-                className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full border text-slate-300 hover:text-cyan-400 flex items-center justify-center transition-all ${
-                  isRecording
-                    ? 'bg-rose-500/20 border-rose-500 text-rose-400 animate-pulse'
-                    : 'bg-slate-900/90 hover:bg-slate-800 border-slate-700/80 hover:border-cyan-500/50'
-                }`}
-                id="mic-btn"
-                onClick={toggleDictation}
-                title={isRecording ? 'Stop Voice Input' : 'Voice Input'}
-                type="button"
-              >
-                <span className="material-symbols-outlined text-base sm:text-lg">mic</span>
-              </button>
-              <button
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-gradient-to-tr from-cyan-500 to-sky-400 hover:from-cyan-400 hover:to-sky-300 text-slate-950 font-bold flex items-center justify-center shadow-[0_0_12px_rgba(0,242,254,0.55)] hover:shadow-[0_0_20px_rgba(0,242,254,0.85)] active:scale-95 transition-all disabled:opacity-50"
-                id="send-btn"
-                onClick={() => handleSendMessage()}
-                disabled={loading}
-                title="Send Prompt"
-                type="button"
-              >
-                <span className="material-symbols-outlined text-base sm:text-lg">arrow_upward</span>
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="text-center mt-1.5 px-4">
-          <span className="font-label-sm text-[10px] text-slate-400/80 tracking-tight">
-            CALISPEC provides automated technical telemetry. Verify primary standards with accredited metrology labs.
-          </span>
+          </footer>
+          {/* END: FloatingSearchInputArea */}
         </div>
       </div>
+      {/* END: Side-by-Side Workspace Layout */}
 
-      {/* File Upload Modal */}
-      <FileUploadModal
-        isOpen={uploadModalOpen}
-        onClose={() => setUploadModalOpen(false)}
-        onUploadSuccess={handleUploadSuccess}
+      {/* Enterprise Authentication Login Modal (Only when opened by user) */}
+      <LoginModal
+        isOpen={loginModalOpen}
+        onClose={() => setLoginModalOpen(false)}
+        onLoginSuccess={handleLoginSuccess}
       />
-
-      {/* Raw Document Inspector Modal */}
-      {inspectingDoc && (
-        <DocumentInspectorModal
-          record={inspectingDoc}
-          onClose={() => setInspectingDoc(null)}
-        />
-      )}
     </div>
   );
 }
