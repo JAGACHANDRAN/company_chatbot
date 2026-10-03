@@ -2,16 +2,14 @@ import os
 import re
 import json
 from typing import List, Dict, Any, Optional
-import httpx
-from dotenv import load_dotenv
+from ..config import (
+    PRIVACY_MODE,
+    OLLAMA_BASE_URL,
+    OLLAMA_API_KEY,
+    LLM_MODEL,
+)
 from .query_understanding import StructuredQuery
 from ..utils.normalization import normalize_company_name, normalize_person_name
-
-load_dotenv()
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com").rstrip("/")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss:120b")
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are a STRICT RESPONSE FORMATTER for retrieved company/contact data.
 
@@ -547,6 +545,15 @@ def format_strict_company_records(records: List[Dict[str, Any]]) -> str:
     return "\n\n\n".join(formatted_groups).strip()
 
 
+def deterministic_synthesize(records: List[Dict[str, Any]]) -> str:
+    """
+    Deterministic fallback synthesizer formatting retrieved company/contact records
+    strictly preserving source attribution, hyperlinks, sequential numbering, and
+    hiding internal database fields without calling any LLM.
+    """
+    return format_strict_company_records(records)
+
+
 def generate_deterministic_answer(
     user_query: str,
     structured_query: StructuredQuery,
@@ -555,7 +562,23 @@ def generate_deterministic_answer(
     """
     Deterministic synthesis enforcing the STRICT RESPONSE FORMATTER specification.
     """
-    return format_strict_company_records(records)
+    return deterministic_synthesize(records)
+
+
+def generate_response(
+    query: str,
+    records: List[Dict[str, Any]],
+    structured_query: Optional[StructuredQuery] = None,
+    **kwargs
+) -> str:
+    """
+    Unified response generation entry point.
+    When PRIVACY_MODE is true: ALWAYS uses the deterministic fallback synthesizer
+    and NEVER calls llm.py or any external model.
+    """
+    if PRIVACY_MODE:
+        return deterministic_synthesize(records)
+    return deterministic_synthesize(records)
 
 
 async def generate_final_answer(
@@ -566,12 +589,16 @@ async def generate_final_answer(
     """
     Generates the final strictly-formatted response for the user's query.
     Guarantees strict compliance with security rules, source file preservation, and display structure.
+    When PRIVACY_MODE is true, always uses deterministic synthesis and never calls llm.py.
     """
     if not records:
         return "No data found"
 
+    if PRIVACY_MODE:
+        return deterministic_synthesize(records)
+
     # Deterministic formatter guarantees 100% adherence to all rules, sequential numbering,
     # deduplication, zero hallucination, and confidential database protection.
-    return format_strict_company_records(records)
+    return deterministic_synthesize(records)
 
 

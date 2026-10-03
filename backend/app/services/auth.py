@@ -57,6 +57,20 @@ def ensure_user_indexes():
         print(f"[User Indexes Warning] {e}")
 
 
+def ensure_default_users():
+    """Ensures user indexes and default collections setup."""
+    ensure_user_indexes()
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    """Finds user by email in the user collection."""
+    try:
+        db = get_database()
+        return db[USER_COLLECTION].find_one({"email": email.strip().lower()})
+    except Exception:
+        return None
+
+
 def hash_password(plain_password: str) -> str:
     """Hashes a password securely using bcrypt."""
     salt = bcrypt.gensalt()
@@ -160,7 +174,18 @@ def authenticate_user(email: str, password: str) -> Optional[dict]:
         }
 
     # 2. Check existing user in MongoDB 'user' (or 'users') collection
-    user_doc = user_col.find_one({"email": clean_email}) or usr_mirror_col.find_one({"email": clean_email})
+    user_doc = user_col.find_one({"email": clean_email})
+    if not user_doc or (not user_doc.get("password_hash") and not user_doc.get("password")):
+        fallback_doc = usr_mirror_col.find_one({"email": clean_email})
+        if fallback_doc and (fallback_doc.get("password_hash") or fallback_doc.get("password")):
+            user_doc = fallback_doc
+            # Sync back to user collection
+            user_col.update_one(
+                {"email": clean_email},
+                {"$set": {k: v for k, v in fallback_doc.items() if k != "_id"}},
+                upsert=True
+            )
+
     if user_doc:
         pwd_match = False
         if user_doc.get("password_hash") and verify_password(clean_pwd, user_doc["password_hash"]):

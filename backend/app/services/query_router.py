@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
+from ..config import PRIVACY_MODE
 from .query_understanding import StructuredQuery
 
 
@@ -23,7 +24,10 @@ class SearchPlan(BaseModel):
     description: str = ""
 
 
-def route_query(structured_query: StructuredQuery) -> SearchPlan:
+def route_query(
+    structured_query: StructuredQuery,
+    privacy_mode: Optional[bool] = None
+) -> SearchPlan:
     """
     Decides the optimal retrieval strategy based on the structured query:
     - exact_entity: single company exact entity lookup (use_vector=False)
@@ -31,8 +35,13 @@ def route_query(structured_query: StructuredQuery) -> SearchPlan:
     - location_filter: structured location filter (use_vector=False)
     - person_search: exact/controlled person search (use_vector=False)
     - hybrid: structured filters as HARD constraints + semantic assistance
-    - semantic_vector: broad conceptual/semantic inquiry (use_vector=True)
+    - semantic_vector: broad conceptual/semantic inquiry (use_vector=True if privacy_mode=False)
+
+    When PRIVACY_MODE is true:
+    - Vector search is strictly disabled (use_vector=False) across all strategies.
+    - System relies on structured regex and MongoDB text-index matching.
     """
+    is_privacy = PRIVACY_MODE if privacy_mode is None else privacy_mode
     comps = structured_query.companies
     people = structured_query.people
     desig = structured_query.designation
@@ -129,7 +138,7 @@ def route_query(structured_query: StructuredQuery) -> SearchPlan:
         return SearchPlan(
             search_strategy="hybrid",
             use_structured=True,
-            use_vector=True,
+            use_vector=False if is_privacy else True,
             structured_filters=structured_filters,
             companies=comps,
             people=people,
@@ -140,7 +149,7 @@ def route_query(structured_query: StructuredQuery) -> SearchPlan:
             country=country,
             location=loc,
             semantic_query=desig or dept or structured_query.original_query,
-            description="Hybrid query: structured filters as HARD constraints with semantic assistance."
+            description="Hybrid query: structured filters as HARD constraints with regex/text-index search (PRIVACY_MODE)" if is_privacy else "Hybrid query: structured filters as HARD constraints with semantic assistance."
         )
 
     # 6. Designation / Department only: e.g. "Show quality managers"
@@ -148,25 +157,25 @@ def route_query(structured_query: StructuredQuery) -> SearchPlan:
         return SearchPlan(
             search_strategy="designation_department",
             use_structured=True,
-            use_vector=True,
+            use_vector=False if is_privacy else True,
             structured_filters=structured_filters,
             designation=desig,
             department=dept,
             semantic_query=desig or dept or "",
-            description="Role/department structured filter with semantic role matching."
+            description="Role/department structured filter with regex/text-index search (PRIVACY_MODE)" if is_privacy else "Role/department structured filter with semantic role matching."
         )
 
     # 7. Pure Semantic Query: e.g. "Who is responsible for quality operations?"
     if has_semantic_intent or (sem and not (comps or people or has_loc)):
         return SearchPlan(
             search_strategy="semantic_vector",
-            use_structured=bool(dept or desig),
-            use_vector=True,
+            use_structured=True if is_privacy else bool(dept or desig),
+            use_vector=False if is_privacy else True,
             structured_filters=structured_filters,
             department=dept,
             designation=desig,
             semantic_query=sem or structured_query.original_query,
-            description="Semantic vector retrieval for conceptual or descriptive inquiry."
+            description="PRIVACY_MODE: vector search skipped; using regex and MongoDB text-index search." if is_privacy else "Semantic vector retrieval for conceptual or descriptive inquiry."
         )
 
     # Fallback to controlled entity search

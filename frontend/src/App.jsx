@@ -841,6 +841,19 @@ export default function App() {
         onClose={() => setLoginModalOpen(false)}
         onLoginSuccess={handleLoginSuccess}
       />
+
+      {/* File Upload Modal (Only for DATA_UPLOADER) */}
+      <FileUploadModal
+        isOpen={uploadModalOpen}
+        onClose={() => setUploadModalOpen(false)}
+        onUploadSuccess={handleUploadSuccess}
+      />
+
+      {/* Document Raw JSON Inspector Modal */}
+      <DocumentInspectorModal
+        record={inspectingDoc}
+        onClose={() => setInspectingDoc(null)}
+      />
     </div>
   );
 }

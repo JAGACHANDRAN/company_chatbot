@@ -4,13 +4,12 @@ import json
 from typing import Optional, List, Dict, Any, Tuple
 import httpx
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
-
-load_dotenv()
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com").rstrip("/")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss:120b")
+from ..config import (
+    PRIVACY_MODE,
+    OLLAMA_BASE_URL,
+    OLLAMA_API_KEY,
+    LLM_MODEL,
+)
 
 
 class StructuredQuery(BaseModel):
@@ -334,6 +333,11 @@ async def parse_query_understanding(user_query: str) -> Tuple[StructuredQuery, b
     clean_query = user_query.strip()
     if not clean_query:
         return StructuredQuery(original_query=""), False
+
+    # Under PRIVACY_MODE, never call external LLM; use deterministic heuristic parsing
+    if PRIVACY_MODE:
+        fallback_result = fallback_query_understanding(clean_query)
+        return fallback_result, False
 
     # Attempt LLM query understanding
     try:

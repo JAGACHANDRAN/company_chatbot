@@ -257,7 +257,7 @@ class TestRAGPipeline(unittest.TestCase):
         self.assertEqual(sq.state, "Tamil Nadu")
         self.assertIn("Quality", sq.designation or sq.department)
 
-        plan = route_query(sq)
+        plan = route_query(sq, privacy_mode=False)
         self.assertEqual(plan.search_strategy, "hybrid")
         self.assertTrue(plan.use_structured)
         self.assertTrue(plan.use_vector)
@@ -272,7 +272,7 @@ class TestRAGPipeline(unittest.TestCase):
     def test_semantic_query_routing(self):
         """Query 'Who is responsible for quality operations?' routes to semantic vector."""
         sq = fallback_query_understanding("Who is responsible for quality operations?")
-        plan = route_query(sq)
+        plan = route_query(sq, privacy_mode=False)
         self.assertEqual(plan.search_strategy, "semantic_vector")
         self.assertTrue(plan.use_vector)
 

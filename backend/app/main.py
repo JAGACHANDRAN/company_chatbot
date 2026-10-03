@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from .config import PRIVACY_MODE, validate_privacy_and_llm_config
 from .database import check_db_connection
 from .services.mongo_dataset import ensure_dataset_indexes, list_datasets
 from .services.auth import ensure_user_indexes
@@ -9,8 +9,6 @@ from .routes.chat import router as chat_router
 from .routes.datasets import router as datasets_router, alias_router
 from .routes.auth import router as auth_router
 from .schemas import HealthResponse
-
-load_dotenv()
 
 app = FastAPI(
     title="Calispec AI Search Chatbot API",
@@ -45,9 +43,10 @@ app.include_router(alias_router)
 
 @app.on_event("startup")
 def on_startup():
-    """Verify MongoDB Cloud connection, ensure indexes on startup."""
+    """Verify MongoDB Cloud connection, ensure indexes, and validate privacy config on startup."""
     print("=" * 60)
     print("Initializing Calispec AI Search Backend (MongoDB + Private Search + RBAC)")
+    validate_privacy_and_llm_config()
     db_connected, msg = check_db_connection()
     if db_connected:
         print(f"[OK] {msg}")
@@ -86,9 +85,10 @@ def health_check():
 def root():
     return {
         "name": "Calispec AI Search Chatbot API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "database": "MongoDB Cloud (Atlas)",
         "docs_url": "/docs",
         "health_url": "/health",
-        "privacy": "Strict (zero database records or user documents sent to LLM)"
+        "privacy_mode": PRIVACY_MODE,
+        "privacy": "Strict (zero confidential contact data or database records sent to external services)"
     }

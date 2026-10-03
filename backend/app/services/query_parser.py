@@ -3,19 +3,18 @@ import re
 import json
 from typing import Optional, List, Dict, Any, Tuple
 import httpx
-from dotenv import load_dotenv
 from ..schemas import QueryIntent, QueryCondition
+from ..config import (
+    PRIVACY_MODE,
+    OLLAMA_BASE_URL,
+    OLLAMA_API_KEY,
+    LLM_MODEL,
+)
 from .concept_mapper import (
     CONCEPT_COLUMNS,
     normalize_company_search_terms,
     get_columns_for_concept,
 )
-
-load_dotenv()
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com").rstrip("/")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss:120b")
 
 STRICT_QUERY_PARSER_SYSTEM_PROMPT = """You are a strict natural-language query parser for a structured business/contact database.
 
@@ -458,11 +457,16 @@ async def parse_user_query(
     Main entry point for parsing user search queries into structured JSON conditions.
     Returns (QueryIntent, was_parsed_by_llm).
     """
-    # 1. Attempt LLM Query Parser
+    # 1. Privacy Mode: strictly skip LLM and use deterministic parsing
+    if PRIVACY_MODE:
+        fallback_intent = parse_query_fallback(user_message)
+        return fallback_intent, False
+
+    # 2. Attempt LLM Query Parser
     llm_intent = await parse_query_with_privacy_llm(user_message)
     if llm_intent and llm_intent.conditions:
         return llm_intent, True
 
-    # 2. High-precision rule-based fallback
+    # 3. High-precision rule-based fallback
     fallback_intent = parse_query_fallback(user_message)
     return fallback_intent, False

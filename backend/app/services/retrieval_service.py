@@ -287,17 +287,17 @@ async def execute_hybrid_retrieval(
         "source_groups": source_groups,
     }
 
-    # Console logging formatted cleanly
+    # Console logging formatted cleanly and safely without exposing raw queries or records
     print("=" * 60)
-    print(f"QUERY:\n\"{user_query}\"")
-    print(f"STRUCTURED QUERY:\n{json.dumps(filters_used, indent=2)}")
-    print(f"SEARCH TYPE:\n{plan.search_strategy}")
-    print(f"EXACT RESULTS:\n{len(exact_results)}")
-    print(f"VECTOR RESULTS:\n{len(vector_results)}")
-    print(f"MERGED:\n{len(candidate_records)}")
-    print(f"DEDUPLICATED:\n{len(deduped_results)}")
-    print(f"FINAL:\n{len(final_results)}")
-    print(f"SOURCE GROUPS:\n{len(source_groups)}")
+    print(f"QUERY: [REDACTED FOR PRIVACY - {len(user_query)} chars]")
+    print(f"INTENT: {structured_query.intent}")
+    print(f"SEARCH TYPE: {plan.search_strategy}")
+    print(f"EXACT RESULTS: {len(exact_results)}")
+    print(f"VECTOR RESULTS: {len(vector_results)}")
+    print(f"MERGED: {len(candidate_records)}")
+    print(f"DEDUPLICATED: {len(deduped_results)}")
+    print(f"FINAL: {len(final_results)}")
+    print(f"SOURCE GROUPS: {len(source_groups)}")
     print("=" * 60)
 
     return final_results, debug_info

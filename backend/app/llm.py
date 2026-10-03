@@ -3,14 +3,22 @@ import os
 import re
 from typing import Optional
 import httpx
-from dotenv import load_dotenv
+from .config import (
+    PRIVACY_MODE,
+    OLLAMA_BASE_URL,
+    OLLAMA_API_KEY,
+    LLM_MODEL,
+)
 from .schemas import QueryIntent
 
-load_dotenv()
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com").rstrip("/")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss:120b")
+def call_llm(*args, **kwargs):
+    """
+    Hard guard ensuring no code path can reach the model if PRIVACY_MODE is true.
+    """
+    if PRIVACY_MODE:
+        raise RuntimeError("LLM disabled: PRIVACY_MODE is on")
+    raise NotImplementedError("Direct call_llm not configured for external models without strict schema.")
 
 SYSTEM_PROMPT = """You are an intelligent query parser for a structured company database.
 
@@ -78,6 +86,8 @@ def fallback_query_parser(message: str) -> QueryIntent:
     Intelligent heuristic fallback if Ollama is unreachable or returns malformed response.
     Recognizes emails, phones, PIN codes, contact person patterns, group names, etc.
     """
+    if PRIVACY_MODE:
+        raise RuntimeError("LLM disabled: PRIVACY_MODE is on")
     clean = message.strip()
 
     # 1. Email pattern
@@ -162,6 +172,9 @@ async def parse_query_with_llm(user_message: str) -> QueryIntent:
     Calls Ollama to parse natural language user search intent into a structured QueryIntent.
     Ensures strict JSON response without SQL generation.
     """
+    if PRIVACY_MODE:
+        raise RuntimeError("LLM disabled: PRIVACY_MODE is on")
+
     if not user_message or not user_message.strip():
         return QueryIntent(field=None, value=None)
 

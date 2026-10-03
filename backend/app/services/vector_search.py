@@ -4,18 +4,17 @@ import math
 import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 import httpx
-from dotenv import load_dotenv
+from ..config import (
+    PRIVACY_MODE,
+    EMBEDDING_PROVIDER,
+    EMBEDDING_MODEL,
+    VECTOR_INDEX_NAME,
+    OLLAMA_BASE_URL,
+    OLLAMA_API_KEY,
+)
 from ..database import get_database, get_collections, get_database_name
 from ..utils.normalization import normalize_record_fields, normalize_text
 from .mongo_dataset import list_datasets, DATASET_RECORDS_COLLECTION
-
-load_dotenv()
-
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip()
-VECTOR_INDEX_NAME = os.getenv("VECTOR_INDEX_NAME", "vector_index").strip()
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com").rstrip("/")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
 
 VECTOR_DIMENSIONS = 256
 
@@ -56,11 +55,14 @@ def generate_local_embedding(text: str, dim: int = VECTOR_DIMENSIONS) -> List[fl
 async def get_embedding(text: str) -> List[float]:
     """
     Retrieves dense vector embedding for text using configured provider.
-    Tries Ollama embeddings first (if configured), then cleanly falls back to local embedding.
+    When PRIVACY_MODE is true, skips external API calls and uses local embedding.
     """
     clean = text.strip()
     if not clean:
         return [0.0] * VECTOR_DIMENSIONS
+
+    if PRIVACY_MODE:
+        return generate_local_embedding(clean)
 
     if EMBEDDING_PROVIDER in ("ollama", "cloud"):
         try:
@@ -132,10 +134,14 @@ async def execute_vector_search(
 ) -> List[Dict[str, Any]]:
     """
     Executes vector/semantic search across database records.
+    When PRIVACY_MODE is true, skips vector search completely and returns empty list.
     1. Checks if MongoDB Atlas Vector Search index ($vectorSearch) is available.
     2. If not, performs in-memory cosine similarity against stored or computed record embeddings.
     Returns normalized records sorted by descending relevance.
     """
+    if PRIVACY_MODE:
+        return []
+
     if not query_text or not query_text.strip():
         return []
 
