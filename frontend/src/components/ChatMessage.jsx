@@ -745,6 +745,37 @@ function parseEmailLink(raw) {
   return { text: raw, href: null };
 }
 
+function cleanDesignation(raw) {
+  if (!raw) return 'Not Available';
+  const parts = String(raw)
+    .split(/[/;]+/)
+    .map((p) => p.trim())
+    .filter((p) => {
+      if (!p) return false;
+      const lower = p.toLowerCase();
+      return (
+        lower !== 'not publicly available' &&
+        lower !== 'publicly not available' &&
+        lower !== 'not available publicly' &&
+        lower !== 'not available' &&
+        lower !== 'not provided' &&
+        lower !== 'not mentioned' &&
+        lower !== 'n/a' &&
+        lower !== 'na' &&
+        lower !== 'null' &&
+        lower !== 'none' &&
+        lower !== '-' &&
+        lower !== '--' &&
+        lower !== 'nil' &&
+        lower !== 'undefined'
+      );
+    });
+  if (parts.length > 0) {
+    return parts.join(' / ');
+  }
+  return 'Not Available';
+}
+
 function parseStrictCompanyText(text) {
   if (!text || typeof text !== 'string') return [];
   if (!text.includes('Company Name:')) return [];
@@ -757,24 +788,14 @@ function parseStrictCompanyText(text) {
   let currentRawLines = [];
 
   for (let rawLine of lines) {
-    const line = rawLine.replace(/^[•\-\*]\s*/, '').trim();
-    if (!line) {
+    const trimmedRaw = rawLine.trim();
+    if (!trimmedRaw) {
       if (currentRawLines.length > 0) currentRawLines.push('');
       continue;
     }
 
-    if (/^(?:Source File|Sources?)\s*:/i.test(line)) {
-      pendingSource = line.replace(/^(?:Source File|Sources?)\s*:\s*/i, '').trim();
-      currentRawLines.push(rawLine);
-      continue;
-    }
-    if (/^(?:Database|Collection)\s*:/i.test(line)) {
-      pendingSource = line.trim();
-      currentRawLines.push(rawLine);
-      continue;
-    }
-
-    if (line.startsWith('---')) {
+    // Markdown horizontal divider rule: ---, ***, ___
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmedRaw)) {
       if (currentCompany) {
         if (currentContact) currentCompany.contacts.push(currentContact);
         currentCompany.rawText = currentRawLines.join('\n').trim();
@@ -784,6 +805,28 @@ function parseStrictCompanyText(text) {
         currentRawLines = [];
       }
       pendingSource = '';
+      continue;
+    }
+
+    // Only strip leading bullet points if followed by whitespace (e.g., "- item", "• item", "* item")
+    const line = trimmedRaw.replace(/^[•\-\*]\s+/, '').trim();
+
+    if (/^(?:Source File|Sources?)\s*:/i.test(line)) {
+      const srcVal = line.replace(/^(?:Source File|Sources?)\s*:\s*/i, '').trim();
+      pendingSource = srcVal;
+      if (currentCompany) {
+        currentCompany.sourceFile = srcVal;
+      }
+      currentRawLines.push(rawLine);
+      continue;
+    }
+    if (/^(?:Database|Collection)\s*:/i.test(line)) {
+      const srcVal = line.trim();
+      pendingSource = srcVal;
+      if (currentCompany) {
+        currentCompany.sourceFile = srcVal;
+      }
+      currentRawLines.push(rawLine);
       continue;
     }
 
@@ -828,28 +871,30 @@ function parseStrictCompanyText(text) {
       if (line.startsWith('Name:')) {
         currentContact.name = line.replace('Name:', '').trim() || 'Not Available';
       } else if (line.startsWith('Designation:')) {
-        currentContact.designation = line.replace('Designation:', '').trim() || 'Not Available';
-      } else if (/^(?:LinkedIn|Linkedin)\s*:/i.test(line)) {
-        const val = line.replace(/^(?:LinkedIn|Linkedin)\s*:\s*/i, '').trim();
+        currentContact.designation = cleanDesignation(line.replace('Designation:', '').trim());
+      } else if (/^(?:LinkedIn URL|LinkedIn|Linkedin)\s*:/i.test(line)) {
+        const val = line.replace(/^(?:LinkedIn URL|LinkedIn|Linkedin)\s*:\s*/i, '').trim();
         currentContact.linkedin = val || 'Not Available';
-      } else if (/^Contact Number \d+:/i.test(line)) {
+      } else if (/^Contact Number(?:\s*\d+)?\s*:/i.test(line)) {
         const colonIdx = line.indexOf(':');
         const label = line.substring(0, colonIdx).trim();
         const val = line.substring(colonIdx + 1).trim();
         currentContact.numbers.push({ label, val });
-      } else if (/^Email \d+:/i.test(line)) {
+      } else if (/^Email(?:\s*\d+)?\s*:/i.test(line)) {
         const colonIdx = line.indexOf(':');
         const label = line.substring(0, colonIdx).trim();
         const val = line.substring(colonIdx + 1).trim();
         currentContact.emails.push({ label, ...parseEmailLink(val) });
-      } else if (line.startsWith('Address:')) {
-        currentContact.locations.push({ label: 'Address', val: line.replace('Address:', '').trim() });
-      } else if (line.startsWith('City:')) {
-        currentContact.locations.push({ label: 'City', val: line.replace('City:', '').trim() });
-      } else if (line.startsWith('State:')) {
-        currentContact.locations.push({ label: 'State', val: line.replace('State:', '').trim() });
-      } else if (line.startsWith('Location:')) {
-        currentContact.locations.push({ label: 'Location', val: line.replace('Location:', '').trim() });
+      } else if (/^(?:Location|City|State|Address)\s*:/i.test(line)) {
+        const colonIdx = line.indexOf(':');
+        const val = line.substring(colonIdx + 1).trim();
+        if (val && val !== 'Not Available') {
+          if (!currentContact.location || currentContact.location === 'Not Available') {
+            currentContact.location = val;
+          } else if (!currentContact.location.includes(val)) {
+            currentContact.location += `, ${val}`;
+          }
+        }
       }
     }
   }
@@ -1286,16 +1331,22 @@ function StrictCompanyCard({ company, index }) {
             <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
               {company.companyName}
             </h3>
-            {company.sourceFile && (
-              <div className="flex items-center gap-1.5 mt-1 text-[11px] font-medium text-slate-600 bg-sky-50/80 border border-sky-100 px-2 py-0.5 rounded-md w-fit">
-                <span className="material-symbols-outlined text-xs text-sky-600">
+            {/* Source File Badge on every result */}
+            {company.sourceFile ? (
+              <div className="flex items-center gap-1.5 mt-1.5 text-xs font-semibold text-sky-800 bg-sky-50 border border-sky-200 px-2.5 py-1 rounded-md w-fit shadow-2xs">
+                <span className="material-symbols-outlined text-sm text-sky-600">
                   {company.sourceFile.includes('Collection:') || company.sourceFile.includes('Database:') ? 'database' : 'description'}
                 </span>
                 <span>
-                  {company.sourceFile.startsWith('Source File:') || company.sourceFile.startsWith('Database:') || company.sourceFile.startsWith('Collection:') || company.sourceFile.startsWith('Source:')
+                  {company.sourceFile.startsWith('Source:') || company.sourceFile.startsWith('Source File:')
                     ? company.sourceFile
-                    : `Source File: ${company.sourceFile}`}
+                    : `Source: ${company.sourceFile}`}
                 </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 mt-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md w-fit">
+                <span className="material-symbols-outlined text-sm text-slate-500">description</span>
+                <span>Source: Database Records</span>
               </div>
             )}
           </div>
@@ -1324,105 +1375,165 @@ function StrictCompanyCard({ company, index }) {
 
       {/* Contact Persons */}
       <div className="mt-4 space-y-4">
-        {company.contacts.map((contact, cIdx) => (
-          <div
-            key={cIdx}
-            className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-4 sm:p-5 space-y-3.5"
-          >
-            {/* Contact Person Header */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200/60">
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 text-[11px] font-bold border border-sky-200/80">
-                  {contact.title || `Contact Person ${cIdx + 1}`}
-                </span>
-                <span className="text-sm sm:text-base font-bold text-slate-800">
-                  {contact.name}
-                </span>
-              </div>
-              <div className="flex items-center gap-1 text-xs text-slate-600 font-medium bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
-                <span className="material-symbols-outlined text-sm text-sky-600">badge</span>
-                <span>{contact.designation}</span>
-              </div>
-            </div>
+        {company.contacts.map((contact, cIdx) => {
+          // Parse structured address, city, state from contact fields or location string
+          const rawLoc = contact.location || '';
+          const locParts =
+            rawLoc && rawLoc.includes('/')
+              ? rawLoc.split('/').map((p) => p.trim()).filter(Boolean)
+              : rawLoc && rawLoc.includes(';')
+              ? rawLoc.split(';').map((p) => p.trim()).filter(Boolean)
+              : [];
+          const dispAddr = contact.address || (locParts.length >= 3 ? locParts[0] : null);
+          const dispCity =
+            contact.city ||
+            (locParts.length >= 3 ? locParts[1] : locParts.length === 2 ? locParts[0] : null);
+          const dispState =
+            contact.state ||
+            (locParts.length >= 3
+              ? locParts.slice(2).join(', ')
+              : locParts.length === 2
+              ? locParts[1]
+              : null);
 
-            {/* Details Grid: Numbers, Emails, Location, LinkedIn */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
-              {/* Contact Numbers */}
-              <div className="bg-white rounded-lg p-3 border border-slate-200/80 shadow-2xs space-y-1.5 min-w-0">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  <span className="material-symbols-outlined text-sm text-sky-600">call</span>
-                  <span>Contact Numbers</span>
+          return (
+            <div
+              key={cIdx}
+              className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-4 sm:p-5 space-y-3.5"
+            >
+              {/* Contact Person Header */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200/60">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 text-[11px] font-bold border border-sky-200/80">
+                    {contact.title || `Contact Person ${cIdx + 1}`}
+                  </span>
+                  <span className="text-sm sm:text-base font-bold text-slate-800">
+                    {contact.name || 'Not Available'}
+                  </span>
                 </div>
-                <div className="space-y-1">
-                  {contact.numbers.length > 0 ? (
-                    contact.numbers.map((num, nIdx) => (
-                      <div key={nIdx} className="text-xs font-medium text-slate-700">
-                        <span className="text-slate-400 text-[10px] block">{num.label}:</span>
-                        {num.val !== 'Not Available' ? (
-                          <a
-                            href={`tel:${num.val.replace(/\s+/g, '')}`}
-                            className="text-sky-700 hover:text-sky-900 font-semibold transition-colors"
-                          >
-                            {num.val}
-                          </a>
+              </div>
+
+              {/* Details Grid: Designation, Location, Emails, Contact Numbers, LinkedIn */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 pt-1">
+                {/* Designation */}
+                <div className="bg-white rounded-lg p-3 border border-slate-200/80 shadow-2xs space-y-1.5 min-w-0">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <span className="material-symbols-outlined text-sm text-sky-600">badge</span>
+                    <span>Designation</span>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs font-semibold text-slate-800">
+                      {cleanDesignation(contact.designation) !== 'Not Available' ? (
+                        cleanDesignation(contact.designation)
+                      ) : (
+                        <span className="text-slate-400 font-normal">Not Available</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Location (Structured: Address / City / State) */}
+                <div className="bg-white rounded-lg p-3 border border-slate-200/80 shadow-2xs space-y-1.5 min-w-0">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    <span className="material-symbols-outlined text-sm text-sky-600">location_on</span>
+                    <span>Location</span>
+                  </div>
+                  <div className="space-y-1.5 text-xs">
+                    {dispAddr && dispAddr !== 'Not Available' ? (
+                      <div>
+                        <span className="text-[10px] text-slate-400 block font-mono">Address:</span>
+                        <span className="font-semibold text-slate-800 break-words">{dispAddr}</span>
+                      </div>
+                    ) : null}
+                    {dispCity && dispCity !== 'Not Available' ? (
+                      <div>
+                        <span className="text-[10px] text-slate-400 block font-mono">City:</span>
+                        <span className="font-semibold text-slate-800">{dispCity}</span>
+                      </div>
+                    ) : null}
+                    {dispState && dispState !== 'Not Available' ? (
+                      <div>
+                        <span className="text-[10px] text-slate-400 block font-mono">State:</span>
+                        <span className="font-semibold text-slate-800">{dispState}</span>
+                      </div>
+                    ) : null}
+                    {!dispAddr && !dispCity && !dispState && (
+                      <div>
+                        {contact.location &&
+                        contact.location !== 'Not Available' &&
+                        contact.location.toLowerCase() !== 'not available' ? (
+                          <span className="font-semibold text-slate-800 break-words">
+                            {contact.location}
+                          </span>
                         ) : (
-                          <span className="text-slate-400">Not Available</span>
+                          <span className="text-slate-400 font-normal">Not Available</span>
                         )}
                       </div>
-                    ))
-                  ) : (
-                    <div className="text-xs text-slate-400">Not Available</div>
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              {/* Email Addresses */}
+              {/* Email Addresses: Email 1 and Email 2 if multiple */}
               <div className="bg-white rounded-lg p-3 border border-slate-200/80 shadow-2xs space-y-1.5 min-w-0">
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                   <span className="material-symbols-outlined text-sm text-sky-600">mail</span>
                   <span>Email Addresses</span>
                 </div>
-                <div className="space-y-1">
-                  {contact.emails.length > 0 ? (
-                    contact.emails.map((em, eIdx) => (
-                      <div key={eIdx} className="text-xs font-medium text-slate-700 break-all">
-                        <span className="text-slate-400 text-[10px] block">{em.label}:</span>
-                        {em.href ? (
-                          <a
-                            href={em.href}
-                            className="text-sky-600 hover:text-sky-800 underline font-semibold transition-colors"
-                          >
-                            {em.text}
-                          </a>
-                        ) : (
-                          <span className="text-slate-400">{em.text}</span>
-                        )}
-                      </div>
-                    ))
+                <div className="space-y-1.5">
+                  {contact.emails && contact.emails.length > 0 ? (
+                    contact.emails.map((em, eIdx) => {
+                      const label = contact.emails.length > 1 ? `Email ${eIdx + 1}` : 'Email';
+                      return (
+                        <div key={eIdx} className="text-xs font-medium text-slate-700 break-all">
+                          <span className="text-slate-400 text-[10px] block font-mono">{label}:</span>
+                          {em.href && em.text !== 'Not Available' ? (
+                            <a
+                              href={em.href}
+                              className="text-sky-600 hover:text-sky-800 underline font-semibold transition-colors"
+                            >
+                              {em.text}
+                            </a>
+                          ) : (
+                            <span className="text-slate-400">{em.text || 'Not Available'}</span>
+                          )}
+                        </div>
+                      );
+                    })
                   ) : (
                     <div className="text-xs text-slate-400">Not Available</div>
                   )}
                 </div>
               </div>
 
-              {/* Location */}
+              {/* Contact Numbers: Contact Number 1 and Contact Number 2 if multiple */}
               <div className="bg-white rounded-lg p-3 border border-slate-200/80 shadow-2xs space-y-1.5 min-w-0">
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  <span className="material-symbols-outlined text-sm text-sky-600">location_on</span>
-                  <span>Location</span>
+                  <span className="material-symbols-outlined text-sm text-sky-600">call</span>
+                  <span>Contact Numbers</span>
                 </div>
-                <div className="space-y-1">
-                  {contact.locations.length > 0 ? (
-                    contact.locations.map((loc, lIdx) => (
-                      <div key={lIdx} className="text-xs font-medium text-slate-700">
-                        <span className="text-slate-400 text-[10px]">{loc.label}: </span>
-                        <span className={loc.val === 'Not Available' ? 'text-slate-400' : 'text-slate-800 font-semibold'}>
-                          {loc.val}
-                        </span>
-                      </div>
-                    ))
+                <div className="space-y-1.5">
+                  {contact.numbers && contact.numbers.length > 0 ? (
+                    contact.numbers.map((num, nIdx) => {
+                      const label = contact.numbers.length > 1 ? `Contact Number ${nIdx + 1}` : 'Contact Number';
+                      const val = num.val || num;
+                      return (
+                        <div key={nIdx} className="text-xs font-medium text-slate-700">
+                          <span className="text-slate-400 text-[10px] block font-mono">{label}:</span>
+                          {val && val !== 'Not Available' ? (
+                            <a
+                              href={`tel:${String(val).replace(/\s+/g, '')}`}
+                              className="text-sky-700 hover:text-sky-900 font-semibold transition-colors"
+                            >
+                              {val}
+                            </a>
+                          ) : (
+                            <span className="text-slate-400">Not Available</span>
+                          )}
+                        </div>
+                      );
+                    })
                   ) : (
-                    <div className="text-xs text-slate-400">Location: Not Available</div>
+                    <div className="text-xs text-slate-400">Not Available</div>
                   )}
                 </div>
               </div>
@@ -1465,14 +1576,15 @@ function StrictCompanyCard({ company, index }) {
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-export default function ChatMessage({ message, onInspect, onEdit }) {
+export default function ChatMessage({ message, onInspect, onEdit, onRunSearch }) {
   const isUser = message.role === 'user';
   const now = new Date();
   const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
@@ -1525,7 +1637,114 @@ export default function ChatMessage({ message, onInspect, onEdit }) {
     }
   };
 
-  const parsedCompanies = text ? parseStrictCompanyText(text) : [];
+  // Build parsed companies list with 100% accurate source file per company
+  let parsedCompanies = [];
+
+  if (message.groups && Array.isArray(message.groups) && message.groups.length > 0) {
+    parsedCompanies = message.groups.map((g) => {
+      const gRecords = g.records || [];
+      const primarySource = (
+        g.source_file ||
+        gRecords[0]?.source_file ||
+        gRecords[0]?.source_filename ||
+        gRecords[0]?.['Source File'] ||
+        gRecords[0]?.dataset_name ||
+        gRecords[0]?._collection ||
+        gRecords[0]?.source_collection ||
+        message.dataset ||
+        'Database'
+      );
+      return {
+        companyName: g.company,
+        sourceFile: primarySource,
+        rawText: text,
+        contacts: gRecords.map((r, rIdx) => ({
+          title: `Contact Person ${rIdx + 1}`,
+          name: r.person || r['Person Name'] || r['Contact Person'] || r['name'] || 'Not Available',
+          designation: r.designation || r['Designation'] || r['Role'] || 'Not Available',
+          linkedin: r.linkedin || r['LinkedIn'] || r['LinkedIn URL'] || 'Not Available',
+          numbers: [r.phone, r.phone_2, r['Phone Number'], r['Mobile'], r['Contact Number']].filter(Boolean).map((p, pIdx) => ({
+            label: `Contact Number ${pIdx + 1}`,
+            val: p
+          })),
+          emails: [r.email, r.email_2, r['Email Address'], r['Mail']].filter(Boolean).map((e, eIdx) => ({
+            label: `Email ${eIdx + 1}`,
+            text: e,
+            href: `mailto:${e}`
+          })),
+          location: [r.location, r.city, r.state, r.address, r.Location, r.Address, r.City, r.State].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Not Available',
+          locations: [
+            r.location && { label: 'Location', val: r.location },
+            r.city && { label: 'City', val: r.city },
+            r.state && { label: 'State', val: r.state },
+            r.address && { label: 'Address', val: r.address }
+          ].filter(Boolean)
+        }))
+      };
+    });
+  } else if (text) {
+    parsedCompanies = parseStrictCompanyText(text);
+
+    // Reconcile parsedCompanies with message.groups using strict exact matching
+    if (parsedCompanies.length > 0 && message.groups && Array.isArray(message.groups)) {
+      parsedCompanies.forEach((comp) => {
+        const normComp = (comp.companyName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const matchGroup = message.groups.find((g) => {
+          const normG = (g.company || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          return normG === normComp;
+        });
+        if (matchGroup) {
+          const groupSource = (
+            matchGroup.source_file ||
+            matchGroup.records?.[0]?.source_file ||
+            matchGroup.records?.[0]?.source_filename ||
+            matchGroup.records?.[0]?.['Source File'] ||
+            matchGroup.records?.[0]?.dataset_name
+          );
+          if (groupSource) {
+            comp.sourceFile = groupSource;
+          }
+        }
+      });
+    }
+  } else if (message.data && Array.isArray(message.data) && message.data.length > 0) {
+    const compMap = new Map();
+    message.data.forEach((r) => {
+      const cName = r.company || r['Company Name'] || r.company_name || 'Company';
+      if (!compMap.has(cName)) {
+        compMap.set(cName, {
+          companyName: cName,
+          sourceFile: r.source_file || r.source_collection || r.dataset || 'Database',
+          rawText: text,
+          contacts: []
+        });
+      }
+      const entry = compMap.get(cName);
+      entry.contacts.push({
+        title: `Contact Person ${entry.contacts.length + 1}`,
+        name: r.person || r['Person Name'] || r['Contact Person'] || r['name'] || 'Not Available',
+        designation: r.designation || r['Designation'] || r['Role'] || 'Not Available',
+        location: [r.location, r.city, r.state, r.address, r.Location, r.Address, r.City, r.State].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Not Available',
+        linkedin: r.linkedin || r['LinkedIn'] || r['LinkedIn URL'] || 'Not Available',
+        numbers: [r.phone, r.phone_2, r['Phone Number'], r['Mobile'], r['Contact Number']].filter(Boolean).map((p, pIdx) => ({
+          label: `Contact Number ${pIdx + 1}`,
+          val: p
+        })),
+        emails: [r.email, r.email_2, r['Email Address'], r['Mail']].filter(Boolean).map((e, eIdx) => ({
+          label: `Email ${eIdx + 1}`,
+          text: e,
+          href: `mailto:${e}`
+        })),
+        locations: [
+          r.location && { label: 'Location', val: r.location },
+          r.city && { label: 'City', val: r.city },
+          r.state && { label: 'State', val: r.state },
+          r.address && { label: 'Address', val: r.address }
+        ].filter(Boolean)
+      });
+    });
+    parsedCompanies = Array.from(compMap.values());
+  }
 
   return (
     <div className="flex flex-col items-start w-full animate-fadeIn">
@@ -1594,11 +1813,38 @@ export default function ChatMessage({ message, onInspect, onEdit }) {
       {!loading && !error && !is_system_notice && (
         <div className="space-y-4 w-full">
           {parsedCompanies.length > 0 ? (
-            /* Render Nice Structured UI Cards for Companies */
+            /* Render Previous Structured UI Cards for Companies (StrictCompanyCard) */
             <div className="space-y-4 w-full">
+
               {parsedCompanies.map((comp, idx) => (
-                <StrictCompanyCard key={idx} company={comp} index={idx} />
+                <StrictCompanyCard key={idx} company={comp} index={idx} totalCount={parsedCompanies.length} />
               ))}
+
+              {/* If some companies were not found in multi-company search */}
+              {message.not_found && message.not_found.length > 0 && (
+                <div className="p-4 rounded-xl bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 space-y-2">
+                  <p className="font-semibold">
+                    No records found for: {message.not_found.map(n => `"${n}"`).join(', ')}
+                  </p>
+                  {message.suggestions && Object.keys(message.suggestions).length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-slate-500 font-medium">Suggestions:</span>
+                      {Object.entries(message.suggestions).map(([k, sugs]) =>
+                        sugs.map((sug, sIdx) => (
+                          <button
+                            key={`${k}-${sIdx}`}
+                            type="button"
+                            onClick={() => onRunSearch?.(sug)}
+                            className="px-2.5 py-0.5 rounded-full bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-semibold shadow-2xs cursor-pointer"
+                          >
+                            {sug}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Bot Response Bottom Action Toolbar for the entire response */}
               <div className="flex items-center justify-between gap-3 pt-1 px-1 text-slate-500 w-full max-w-3xl">
@@ -1628,6 +1874,50 @@ export default function ChatMessage({ message, onInspect, onEdit }) {
                   />
                 </div>
               </div>
+            </div>
+          ) : message.not_found && message.not_found.length > 0 ? (
+            /* Render Not Found Banner if no companies parsed */
+            <div className="bg-gradient-to-r from-amber-50/90 to-sky-50/60 border border-amber-200/80 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 border border-amber-300/60 shadow-2xs">
+                  <span className="material-symbols-outlined text-xl">travel_explore</span>
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-sm sm:text-base font-bold text-slate-900">
+                    {message.not_found.length === 1
+                      ? `No records found for "${message.not_found[0]}"`
+                      : `No records found for ${message.not_found.map(n => `"${n}"`).join(', ')}`}
+                  </h4>
+                  <p className="text-xs text-slate-600">
+                    The requested company or contact was not found in the active datasets.
+                  </p>
+                </div>
+              </div>
+
+              {message.not_found.some(n => (message.suggestions?.[n] || []).length > 0) && (
+                <div className="pt-2 border-t border-amber-200/60 space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                    <span className="material-symbols-outlined text-sm text-sky-600">lightbulb</span>
+                    <span>Did you mean one of these companies?</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {message.not_found.map(name => {
+                      const sugs = message.suggestions?.[name] || [];
+                      return sugs.map((sug, sIdx) => (
+                        <button
+                          key={`${name}-${sIdx}`}
+                          type="button"
+                          onClick={() => onRunSearch?.(sug)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white hover:bg-sky-50 text-sky-700 hover:text-sky-900 border border-sky-300 font-semibold text-xs shadow-2xs hover:shadow-xs hover:scale-102 transition-all cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-xs text-sky-600">apartment</span>
+                          <span>{sug}</span>
+                        </button>
+                      ));
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           ) : text && text !== 'No data found' ? (
             /* Fallback formatted message for general notifications */

@@ -186,6 +186,8 @@ def extract_contact_numbers(rec: Dict[str, Any]) -> List[str]:
     sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
 
     keys_to_check = [
+        rec.get("phone"),
+        rec.get("phone_2"),
         rec.get("contact_number"),
         rec.get("mobile_no"),
         rec.get("telephone_1"),
@@ -285,7 +287,7 @@ def extract_person_info(rec: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """Extracts contact person name and designation."""
     sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
     name = None
-    for k in ["person_name", "contact_person", "Name", "Contact Person", "Person Name", "Employee Name", "Customer Name", "Contact"]:
+    for k in ["person", "person_name", "contact_person", "Name", "Contact Person", "Person Name", "Employee Name", "Customer Name", "Contact"]:
         val = rec.get(k) or sf.get(k)
         cv = clean_val(val)
         if cv:

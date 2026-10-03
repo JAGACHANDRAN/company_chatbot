@@ -34,7 +34,9 @@ export default function App() {
   const [inspectingDoc, setInspectingDoc] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [cleanModalOpen, setCleanModalOpen] = useState(false);
   const [docsDropdownOpen, setDocsDropdownOpen] = useState(false);
+  const [docSearchQuery, setDocSearchQuery] = useState('');
   const [isRecording, setIsRecording] = useState(false);
 
   // Datasets state
@@ -178,15 +180,19 @@ export default function App() {
     setActiveDatasetId('all');
     setDocsDropdownOpen(false);
 
-    const announcementMsg = {
-      id: `assistant-dataset-ready-${Date.now()}`,
-      role: 'assistant',
-      is_system_notice: true,
-      text: `Your dataset is ready for private AI search.\n\n📄 File: ${newDataset.filename}\n📊 Records: ${newDataset.record_count?.toLocaleString()}\n🏷️ Columns: ${newDataset.fields?.join(', ')}\n\nThis file is now part of the searchable pool. All queries search across all uploaded datasets by default!`,
-      dataset_name: newDataset.filename,
-    };
+    if (newDataset && (newDataset.filename || newDataset.count)) {
+      const fileName = newDataset.filename || `${newDataset.count} uploaded datasets`;
+      const recCount = newDataset.record_count?.toLocaleString() || newDataset.total_records?.toLocaleString() || 'All';
+      const announcementMsg = {
+        id: `assistant-dataset-ready-${Date.now()}`,
+        role: 'assistant',
+        is_system_notice: true,
+        text: `Your dataset is ready for private AI search.\n\n📄 File: ${fileName}\n📊 Records: ${recCount}\n\nThis file is now part of the searchable pool. All queries search across all uploaded datasets by default!`,
+        dataset_name: fileName,
+      };
 
-    setMessages((prev) => [...prev, announcementMsg]);
+      setMessages((prev) => [...prev, announcementMsg]);
+    }
   };
 
   const handleDeleteDataset = async (datasetIdToDelete) => {
@@ -278,6 +284,12 @@ export default function App() {
         query_intent: response.query_intent,
         lookup_result: response.lookup_result,
         text: response.message,
+        understood_as: response.understood_as,
+        groups: response.groups,
+        not_found: response.not_found,
+        suggestions: response.suggestions,
+        notes: response.notes,
+        total: response.total,
       };
 
       const finalMessages = newMessages.map((msg) =>
@@ -343,7 +355,20 @@ export default function App() {
     }
   };
 
-  const isAll = !activeDatasetId || activeDatasetId === 'all' || activeDatasetId === 'default';
+  const activeDoc = datasets.find((d) => d.dataset_id === activeDatasetId);
+  const isAll = !activeDatasetId || activeDatasetId === 'all' || activeDatasetId === 'default' || !activeDoc;
+
+  // Alphabetical sorting of documents by filename
+  const sortedDatasets = [...datasets].sort((a, b) =>
+    (a.filename || '').localeCompare(b.filename || '', undefined, { sensitivity: 'base' })
+  );
+
+  // Search filtering by typed query
+  const filteredDatasets = docSearchQuery.trim()
+    ? sortedDatasets.filter((d) =>
+        (d.filename || '').toLowerCase().includes(docSearchQuery.trim().toLowerCase())
+      )
+    : sortedDatasets;
 
   return (
     <div className="bg-[#f8fafc] text-slate-800 antialiased h-screen flex flex-col justify-between overflow-hidden selection:bg-sky-100 selection:text-sky-900 relative">
@@ -398,213 +423,268 @@ export default function App() {
         <div className="flex items-center space-x-2.5">
           <div className="relative z-50" ref={docsPanelRef}>
             <div
-              className="flex items-center space-x-2.5 px-4 py-2 rounded-full border border-sky-200/80 bg-white/90 text-slate-700 hover:border-sky-300 transition-all cursor-pointer shadow-sm group select-none"
+              className={`flex items-center space-x-2.5 px-4 py-2 rounded-full border transition-all cursor-pointer shadow-sm group select-none ${
+                activeDoc
+                  ? 'border-sky-300 bg-sky-50/70 text-sky-900'
+                  : 'border-sky-200/80 bg-white/90 text-slate-700 hover:border-sky-300'
+              }`}
               data-purpose="documents-status-pill"
               onClick={() => setDocsDropdownOpen(!docsDropdownOpen)}
             >
-            {/* Database Icon */}
-            <svg
-              className="w-4 h-4 text-sky-600 group-hover:scale-105 transition-transform"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-            >
-              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-            </svg>
-            {/* Status Label */}
-            <span className="text-sm font-medium tracking-tight">Uploaded Documents</span>
-            {/* Indexed Badge */}
-            <span className="text-xs px-2.5 py-0.5 font-semibold text-sky-700 bg-sky-100 rounded-full">
-              {datasets.length > 0 ? `${datasets.length} Indexed` : 'Indexed'}
-            </span>
-            {/* Dropdown Chevron */}
-            <svg
-              className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ml-0.5 ${
-                docsDropdownOpen ? 'rotate-180' : ''
-              }`}
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2.5"
-              viewBox="0 0 24 24"
-            >
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </div>
+              {/* Database Icon */}
+              <svg
+                className="w-4 h-4 text-sky-600 group-hover:scale-105 transition-transform"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+              </svg>
+              {/* Status Label */}
+              <span className="text-sm font-medium tracking-tight truncate max-w-[170px]" title={activeDoc ? activeDoc.filename : 'Uploaded Documents'}>
+                {activeDoc ? activeDoc.filename : 'Uploaded Documents'}
+              </span>
+              {/* Indexed / Active Badge */}
+              <span className={`text-xs px-2.5 py-0.5 font-semibold rounded-full ${
+                activeDoc
+                  ? 'text-emerald-700 bg-emerald-100'
+                  : 'text-sky-700 bg-sky-100'
+              }`}>
+                {activeDoc ? 'Filtered' : datasets.length > 0 ? `${datasets.length} Indexed` : 'All Files'}
+              </span>
+              {/* Dropdown Chevron */}
+              <svg
+                className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ml-0.5 ${
+                  docsDropdownOpen ? 'rotate-180' : ''
+                }`}
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2.5"
+                viewBox="0 0 24 24"
+              >
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
 
-          {/* Dropdown Menu */}
-          {docsDropdownOpen && (
-            <div
-              className="absolute right-0 mt-2.5 w-96 rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl p-4 z-50 animate-fadeIn"
-              id="db-docs-panel"
-            >
-              <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-sky-600 text-base">folder_open</span>
-                  <span className="text-xs font-bold text-slate-800 tracking-wide uppercase font-headline-xl">
-                    Indexed Repository
-                  </span>
-                </div>
-                <span className="text-[10px] font-label-sm text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 font-semibold">
-                  Synced
-                </span>
-              </div>
-
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                {/* All Datasets option */}
-                <div
-                  className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
-                    isAll
-                      ? 'bg-sky-50/80 border-sky-300 shadow-xs'
-                      : 'bg-slate-50 hover:bg-sky-50/50 border-slate-200/80 hover:border-sky-300'
-                  }`}
-                  onClick={() => {
-                    setActiveDatasetId('all');
-                    setDocsDropdownOpen(false);
-                  }}
-                >
-                  <div className="flex items-center gap-2.5 truncate">
-                    <span className="material-symbols-outlined text-sky-600 text-lg flex-shrink-0">
-                      layers
+            {/* Dropdown Menu */}
+            {docsDropdownOpen && (
+              <div
+                className="absolute right-0 mt-2.5 w-96 rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl p-4 z-50 animate-fadeIn"
+                id="db-docs-panel"
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-slate-100">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sky-600 text-base">folder_open</span>
+                    <span className="text-xs font-bold text-slate-800 tracking-wide uppercase font-headline-xl">
+                      Indexed Documents
                     </span>
-                    <div className="truncate">
-                      <p className="text-xs font-semibold text-slate-800 truncate">
-                        All Uploaded Datasets (Default)
-                      </p>
-                      <p className="text-[10px] font-label-sm text-slate-500">
-                        Search across all {datasets.length} files &amp; collections
-                      </p>
-                    </div>
+                    <span className="text-[10px] text-slate-400 font-normal">({sortedDatasets.length})</span>
                   </div>
-                  {isAll && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-700 font-label-sm font-semibold">
-                      Active
+                  {activeDoc ? (
+                    <button
+                      type="button"
+                      onClick={() => setActiveDatasetId('all')}
+                      className="text-[10px] text-sky-600 hover:text-sky-800 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded border border-sky-200 font-semibold transition-all"
+                      title="Clear selection and search all database files"
+                    >
+                      Search All Files
+                    </button>
+                  ) : (
+                    <span className="text-[10px] font-label-sm text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 font-semibold">
+                      Searching All Files
                     </span>
                   )}
                 </div>
 
-                {datasets.map((d) => {
-                  const isSelected = activeDatasetId === d.dataset_id;
-                  const ext = d.original_type || d.filename?.split('.').pop() || 'csv';
-                  const icon =
-                    ext === 'pdf'
-                      ? 'picture_as_pdf'
-                      : ext === 'json'
-                      ? 'data_object'
-                      : ext === 'xml'
-                      ? 'code'
-                      : 'table_chart';
-                  const iconColor =
-                    ext === 'pdf'
-                      ? 'text-rose-500'
-                      : ext === 'json'
-                      ? 'text-sky-600'
-                      : ext === 'xml'
-                      ? 'text-amber-600'
-                      : 'text-emerald-600';
+                {/* Search by typing input box */}
+                <div className="relative mb-2.5">
+                  <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">
+                    search
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Search documents by name..."
+                    value={docSearchQuery}
+                    onChange={(e) => setDocSearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-500 focus:border-sky-500 transition-all"
+                  />
+                  {docSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setDocSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                      title="Clear search"
+                    >
+                      <span className="material-symbols-outlined text-xs">close</span>
+                    </button>
+                  )}
+                </div>
 
-                  return (
-                    <div
-                      key={d.dataset_id}
-                      className={`group flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
-                        isSelected
-                          ? 'bg-sky-50/80 border-sky-300 shadow-xs'
-                          : 'bg-slate-50 hover:bg-sky-50/50 border-slate-200/80 hover:border-sky-300'
-                      }`}
+                {/* Scope Hint */}
+                <div className="mb-2 px-1 text-[11px] text-slate-500 flex items-center justify-between">
+                  <span>
+                    {activeDoc ? (
+                      <>Active: <strong className="text-sky-700">{activeDoc.filename}</strong></>
+                    ) : (
+                      <>Active: <strong className="text-slate-700">All Files</strong> (No filter)</>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-slate-400">
+                    {activeDoc ? 'Click active doc to deselect' : 'Click a doc to search it'}
+                  </span>
+                </div>
+
+                {/* Document List (Alphabetical Order, Scrollable) */}
+                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                  {filteredDatasets.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-400">
+                      {datasets.length === 0 ? (
+                        <p>No documents uploaded yet.</p>
+                      ) : (
+                        <div>
+                          <p>No documents matching &ldquo;{docSearchQuery}&rdquo;</p>
+                          <button
+                            type="button"
+                            onClick={() => setDocSearchQuery('')}
+                            className="mt-1 text-sky-600 hover:text-sky-700 underline font-medium"
+                          >
+                            Clear search
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    filteredDatasets.map((d) => {
+                      const isSelected = activeDatasetId === d.dataset_id;
+                      const ext = d.original_type || d.filename?.split('.').pop() || 'csv';
+                      const icon =
+                        ext === 'pdf'
+                          ? 'picture_as_pdf'
+                          : ext === 'json'
+                          ? 'data_object'
+                          : ext === 'xml'
+                          ? 'code'
+                          : 'table_chart';
+                      const iconColor =
+                        ext === 'pdf'
+                          ? 'text-rose-500'
+                          : ext === 'json'
+                          ? 'text-sky-600'
+                          : ext === 'xml'
+                          ? 'text-amber-600'
+                          : 'text-emerald-600';
+
+                      return (
+                        <div
+                          key={d.dataset_id}
+                          className={`group flex items-center justify-between p-2 rounded-xl border transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-sky-50/90 border-sky-400 ring-1 ring-sky-300 shadow-xs'
+                              : 'bg-slate-50/70 hover:bg-sky-50/40 border-slate-200/80 hover:border-sky-300'
+                          }`}
+                          title={isSelected ? `Click to deselect and search all files` : `Click to search only ${d.filename}`}
+                          onClick={() => {
+                            if (isSelected) {
+                              // Clicking active doc deselects it -> search all files
+                              setActiveDatasetId('all');
+                            } else {
+                              // Clicking doc selects it -> search only this doc
+                              setActiveDatasetId(d.dataset_id);
+                            }
+                          }}
+                        >
+                          <div className="flex items-center gap-2.5 truncate flex-1 min-w-0 pr-1">
+                            <span className={`material-symbols-outlined ${iconColor} text-lg flex-shrink-0`}>
+                              {icon}
+                            </span>
+                            <div className="truncate">
+                              <p className="text-xs font-semibold text-slate-800 truncate" title={d.filename}>
+                                {d.filename}
+                              </p>
+                              <p className="text-[10px] font-label-sm text-slate-500">
+                                {d.record_count?.toLocaleString()} rows &bull; .{ext}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            {isSelected && confirmDeleteId !== d.dataset_id && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-700 font-label-sm font-semibold">
+                                Active
+                              </span>
+                            )}
+
+                            {/* Delete Dataset Button (Restricted to DATA_UPLOADER) */}
+                            {isDataUploader && (
+                              confirmDeleteId === d.dataset_id ? (
+                                <div className="flex items-center gap-1 animate-fadeIn">
+                                  <button
+                                    type="button"
+                                    className="p-1 text-xs text-rose-600 hover:text-rose-700 bg-rose-50 rounded border border-rose-200 transition-all font-medium"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteDataset(d.dataset_id);
+                                      setConfirmDeleteId(null);
+                                    }}
+                                  >
+                                    Delete
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="p-1 text-xs text-slate-500 hover:text-slate-700 bg-slate-100 rounded transition-all"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setConfirmDeleteId(null);
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all"
+                                  title="Delete Dataset"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteId(d.dataset_id);
+                                  }}
+                                >
+                                  <span className="material-symbols-outlined text-xs">delete</span>
+                                </button>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Upload Data File Button (Restricted to DATA_UPLOADER) */}
+                {isDataUploader && (
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-700 border border-sky-200 transition-all shadow-xs"
                       onClick={() => {
-                        setActiveDatasetId(d.dataset_id);
                         setDocsDropdownOpen(false);
+                        setUploadModalOpen(true);
                       }}
                     >
-                      <div className="flex items-center gap-2.5 truncate flex-1 min-w-0 pr-1">
-                        <span className={`material-symbols-outlined ${iconColor} text-lg flex-shrink-0`}>
-                          {icon}
-                        </span>
-                        <div className="truncate">
-                          <p className="text-xs font-semibold text-slate-800 truncate">
-                            {d.filename}
-                          </p>
-                          <p className="text-[10px] font-label-sm text-slate-500">
-                            {d.record_count?.toLocaleString()} rows • .{ext}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        {isSelected && confirmDeleteId !== d.dataset_id && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-700 font-label-sm font-semibold">
-                            Active
-                          </span>
-                        )}
-
-                        {/* Delete Dataset Button (Restricted to DATA_UPLOADER) */}
-                        {isDataUploader && (
-                          confirmDeleteId === d.dataset_id ? (
-                            <div className="flex items-center gap-1 animate-fadeIn">
-                              <button
-                                type="button"
-                                className="p-1 text-xs text-rose-600 hover:text-rose-700 bg-rose-50 rounded border border-rose-200 transition-all font-medium"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteDataset(d.dataset_id);
-                                  setConfirmDeleteId(null);
-                                }}
-                              >
-                                Delete
-                              </button>
-                              <button
-                                type="button"
-                                className="p-1 text-xs text-slate-500 hover:text-slate-700 bg-slate-100 rounded transition-all"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setConfirmDeleteId(null);
-                                }}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-500 transition-all"
-                              title="Delete Dataset"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setConfirmDeleteId(d.dataset_id);
-                              }}
-                            >
-                              <span className="material-symbols-outlined text-xs">delete</span>
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                      <span className="material-symbols-outlined text-sm">upload_file</span>
+                      <span>Upload New Data File (.csv, .xlsx, .json, .xml, .txt)</span>
+                    </button>
+                  </div>
+                )}
               </div>
-
-              {/* Upload Data File Button in Dropdown (Restricted to DATA_UPLOADER) */}
-              {isDataUploader && (
-                <div className="mt-3 pt-2.5 border-t border-slate-100">
-                  <button
-                    type="button"
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-700 border border-sky-200 transition-all shadow-xs"
-                    onClick={() => {
-                      setDocsDropdownOpen(false);
-                      setUploadModalOpen(true);
-                    }}
-                  >
-                    <span className="material-symbols-outlined text-sm">upload_file</span>
-                    <span>Upload New Data File (.csv, .xlsx, .json, .xml, .txt)</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+            )}
         </div>
 
         {/* Round Profile Button & User Dropdown */}
@@ -659,12 +739,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="py-2.5 text-[11px]">
+              <div className="py-2.5 text-[11px] flex flex-col gap-2">
                 {isDataUploader ? (
-                  <span className="flex items-center gap-1.5 text-emerald-700 font-medium">
-                    <span className="material-symbols-outlined text-xs">verified</span>
-                    <span>Upload &amp; dataset management active</span>
-                  </span>
+                  <>
+                    <span className="flex items-center gap-1.5 text-emerald-700 font-medium">
+                      <span className="material-symbols-outlined text-xs">verified</span>
+                      <span>Upload &amp; dataset management active</span>
+                    </span>
+                  </>
                 ) : (
                   <span className="flex items-center gap-1.5 text-slate-500">
                     <span className="material-symbols-outlined text-xs">search</span>
@@ -717,6 +799,7 @@ export default function App() {
               messages.length === 0 ? 'justify-center -mt-10' : 'justify-start pt-2'
             }`}
           >
+
             <div className="flex flex-col w-full h-full justify-between pb-2">
               {messages.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 px-4 my-auto">
@@ -741,6 +824,7 @@ export default function App() {
                       key={message.id}
                       message={message}
                       onInspect={(doc) => setInspectingDoc(doc)}
+                      onRunSearch={(searchQuery) => handleSendMessage(searchQuery)}
                     />
                   ))}
                 </div>
@@ -848,6 +932,7 @@ export default function App() {
         onClose={() => setUploadModalOpen(false)}
         onUploadSuccess={handleUploadSuccess}
       />
+
 
       {/* Document Raw JSON Inspector Modal */}
       <DocumentInspectorModal

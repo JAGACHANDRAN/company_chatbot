@@ -2,12 +2,14 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import PRIVACY_MODE, validate_privacy_and_llm_config
-from .database import check_db_connection
+from .database import check_db_connection, get_database, get_configured_collection_names
+from .services.contact_search import ensure_contact_indexes, get_or_build_vocab, check_uncleaned_collections
 from .services.mongo_dataset import ensure_dataset_indexes, list_datasets
 from .services.auth import ensure_user_indexes
 from .routes.chat import router as chat_router
 from .routes.datasets import router as datasets_router, alias_router
 from .routes.auth import router as auth_router
+from .routes.admin_clean import router as admin_clean_router
 from .schemas import HealthResponse
 
 app = FastAPI(
@@ -39,6 +41,7 @@ app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(datasets_router)
 app.include_router(alias_router)
+app.include_router(admin_clean_router)
 
 
 @app.on_event("startup")
@@ -52,6 +55,17 @@ def on_startup():
         print(f"[OK] {msg}")
         ensure_dataset_indexes()
         ensure_user_indexes()
+        try:
+            db = get_database()
+            configured = get_configured_collection_names()
+            all_cols = list(dict.fromkeys(configured + ["dataset_records"]))
+            ensure_contact_indexes(db, all_cols)
+            get_or_build_vocab(db, all_cols)
+            uncleaned = check_uncleaned_collections(db, configured)
+            if uncleaned:
+                print(f"[WARNING] {len(uncleaned)} dataset(s) need cleaning: {', '.join(uncleaned)}")
+        except Exception as startup_err:
+            print(f"[WARNING] Contact search initialization notice: {startup_err}")
         datasets = list_datasets()
         print(f"[INFO] Active Uploaded Datasets: {len(datasets)}")
     else:

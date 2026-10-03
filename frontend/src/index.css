@@ -3,20 +3,16 @@
    ========================================================================== */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-/* ── Custom Scrollbar ── */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* ── Invisible Scrollbars (Clean UI without visible right-side scrollbar lines) ── */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
-::-webkit-scrollbar-track {
-  background: #f1f5f9;
-}
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 9999px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
 }
 
 /* ── Ambient Radial Glow ── */
@@ -2855,25 +2851,7 @@ body {
   }
 }
 
-/* ==========================================================================
-   Scrollbar Styling — Warm
-   ========================================================================== */
-::-webkit-scrollbar {
-  width: 6px;
-}
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--border-light);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}
 
 /* ==========================================================================
    Data view padding for non-sidebar views
@@ -3921,6 +3899,15 @@ body {
 .lookup-link:hover {
   color: var(--primary-hover);
   border-bottom-color: var(--primary-hover);
+}
+
+/* Custom dashed dropzone */
+.dashed-dropzone {
+  border: 1.5px dashed #38bdf8;
+  background: radial-gradient(circle at 50% 20%, rgba(240, 249, 255, 0.6) 0%, rgba(255, 255, 255, 0.9) 100%);
+}
+.dashed-dropzone:hover {
+  border-color: #0284c7;
 }
 
 

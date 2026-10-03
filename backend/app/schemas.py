@@ -77,6 +77,12 @@ class ChatResponse(BaseModel):
     query_intent: Optional[Any] = None
     lookup_result: Optional[LookupResult] = None
     message: Optional[str] = None
+    understood_as: Optional[List[str]] = None
+    groups: Optional[List[Dict[str, Any]]] = None
+    not_found: Optional[List[str]] = None
+    suggestions: Optional[Dict[str, Any]] = None
+    notes: Optional[List[str]] = None
+    total: Optional[int] = None
 
 
 class DatasetUploadResponse(BaseModel):
@@ -141,3 +147,110 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+class DatasetPreviewResponse(BaseModel):
+    success: bool = True
+    preview_id: str
+    filename: str
+    summary: Dict[str, Any]
+    column_mapping: List[Dict[str, Any]]
+    changes: List[Dict[str, Any]]
+    total_changes: int = 0
+    needs_review: List[Dict[str, Any]]
+    cleaned_preview: List[Dict[str, Any]] = Field(default_factory=list)
+    cleaned_rows: Optional[List[Dict[str, Any]]] = None
+    has_usable_rows: bool = True
+    message: Optional[str] = None
+    re_preview: Optional[bool] = False
+    is_fully_clean: bool = False
+
+
+class ChangesPageResponse(BaseModel):
+    success: bool = True
+    total: int = 0
+    offset: int = 0
+    limit: int = 100
+    changes: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class DatasetConfirmRequest(BaseModel):
+    preview_id: str
+    dataset_name: Optional[str] = None
+    mode: str = "append"  # "append" or "replace"
+    column_mapping: Optional[Dict[str, Optional[str]]] = None
+
+
+class DatasetConfirmResponse(BaseModel):
+    success: bool = True
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
+    filename: Optional[str] = None
+    inserted: int = 0
+    skipped: int = 0
+    total_records: int = 0
+    message: str = "Dataset successfully confirmed and saved to MongoDB."
+    re_preview: Optional[bool] = False
+    preview_id: Optional[str] = None
+    summary: Optional[Dict[str, Any]] = None
+    column_mapping: Optional[List[Dict[str, Any]]] = None
+    changes: Optional[List[Dict[str, Any]]] = None
+    total_changes: Optional[int] = 0
+    needs_review: Optional[List[Dict[str, Any]]] = None
+    cleaned_preview: Optional[List[Dict[str, Any]]] = None
+    cleaned_rows: Optional[List[Dict[str, Any]]] = None
+    has_usable_rows: Optional[bool] = True
+
+
+class AdminCollectionInfo(BaseModel):
+    name: str
+    count: int = 0
+    exists: bool = True
+    is_backup: bool = False
+    is_cleaned: bool = False
+    has_backup: bool = False
+    has_cleaned: bool = False
+
+
+class AdminCollectionsResponse(BaseModel):
+    success: bool = True
+    collections: List[AdminCollectionInfo]
+
+
+class AdminCleanPreviewRequest(BaseModel):
+    collection: str = Field(..., description="Target MongoDB collection to preview cleaning for")
+    ignore_fields: Optional[List[str]] = Field(default=None, description="Optional extra field names to ignore")
+
+
+class AdminCleanPreviewResponse(BaseModel):
+    success: bool = True
+    preview_id: str
+    collection: str
+    summary: Dict[str, Any]
+    column_mapping: List[Dict[str, Any]]
+    changes: List[Dict[str, Any]]
+    total_changes: int = 0
+    needs_review: List[Dict[str, Any]]
+    cleaned_preview: List[Dict[str, Any]] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class AdminCleanApplyRequest(BaseModel):
+    preview_id: str
+    mode: str = Field(..., description="'new_collection' or 'replace'")
+    confirm_name: Optional[str] = Field(default=None, description="Exact collection name must be typed for 'replace' mode")
+
+
+class AdminCleanApplyResponse(BaseModel):
+    success: bool = True
+    mode: str
+    collection: str
+    target_collection: str
+    rows_written: int = 0
+    backup_collection: Optional[str] = None
+    message: str
+    next_steps: List[str] = Field(default_factory=list)
+    privacy_mode_active: bool = False
+    requires_embedding_rebuild: bool = False
+
+

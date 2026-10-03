@@ -470,7 +470,8 @@ def normalize_record_fields(
 INTERNAL_EXCLUDE_KEYS = {
     "_id", "id", "embedding", "search_text", "normalized_data", "data", "raw_data",
     "norm_company_name", "norm_person_name", "norm_designation", "norm_department",
-    "norm_state", "norm_city", "norm_country", "norm_location",
+    "norm_state", "norm_city", "norm_country", "norm_location", "norm_company",
+    "needs_review", "review_reasons", "uploaded_at",
     "_norm_company_name", "_norm_person_name", "_norm_designation", "_norm_department",
     "_norm_state", "_norm_city", "_norm_country", "_norm_location",
     "vector_score", "similarity_score", "retrieval_score", "chunk_text", "internal_id",

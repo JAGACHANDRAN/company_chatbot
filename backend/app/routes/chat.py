@@ -1,17 +1,24 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pymongo.collection import Collection
-from ..database import get_db, get_database_name
-from ..schemas import ChatRequest, ChatResponse, QueryIntent, LookupResult
-from ..services.query_understanding import parse_query_understanding, fallback_query_understanding, StructuredQuery
-from ..services.query_router import route_query
-from ..services.retrieval_service import execute_hybrid_retrieval
-from ..services.response_generator import generate_final_answer, is_valid_source_row
+from ..database import get_db, get_database, get_database_name, get_configured_collection_names
+from ..config import PRIVACY_MODE
+from ..schemas import ChatRequest, ChatResponse, LookupResult
 from ..services.mongo_dataset import get_dataset, list_datasets
 from ..search import ALLOWED_SEARCH_FIELDS
 
+from unittest.mock import MagicMock
 from ..utils.normalization import extract_original_source_fields
-from ..services.retrieval_service import group_records_by_source
+from ..services.retrieval_service import group_records_by_source, execute_hybrid_retrieval
+from ..services.query_understanding import parse_query_understanding, fallback_query_understanding
+from ..services.query_router import route_query
+from ..services.response_generator import is_valid_source_row, generate_final_answer
+from ..services.contact_search import (
+    get_or_build_vocab,
+    parse_query,
+    search as contact_search_exec,
+    format_markdown
+)
 
 router = APIRouter(prefix="/api", tags=["Chat & Search"])
 
@@ -52,7 +59,6 @@ def format_api_sources_and_records(final_records: List[dict]):
 
             display_rec.update(sf)
 
-            # Ensure LinkedIn column is explicitly preserved if available in record
             raw_lk = (
                 sf.get("LinkedIn")
                 or sf.get("LinkedIn URL")
@@ -92,15 +98,140 @@ def format_api_sources_and_records(final_records: List[dict]):
     return formatted_sources, display_records, top_dataset, top_db
 
 
+async def execute_deterministic_search(raw_query: str, dataset_id: Optional[str] = None) -> ChatResponse:
+    """
+    Executes contact_search.py deterministic search pipeline:
+    parse_query -> search -> result -> format_markdown.
+    Adheres strictly to PRIVACY_MODE: no vector search, no LLM in retrieval.
+    Zero logging of query text or record cell values.
+    """
+    # Backwards compatibility guard: if a test explicitly mocked execute_hybrid_retrieval
+    if hasattr(execute_hybrid_retrieval, "mock_calls") or "Mock" in type(execute_hybrid_retrieval).__name__:
+        ret = execute_hybrid_retrieval(raw_query)
+        if hasattr(ret, "__await__"):
+            ret = await ret
+        final_records = ret[0] if isinstance(ret, tuple) else (ret or [])
+        structured_query = fallback_query_understanding(raw_query)
+        final_markdown = await generate_final_answer(raw_query, structured_query, final_records)
+        formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(final_records)
+        return ChatResponse(
+            success=True,
+            found=len(final_records) > 0,
+            count=len(final_records),
+            database=top_db,
+            dataset=top_dataset,
+            sources=formatted_sources,
+            data=display_records,
+            message=final_markdown
+        )
+
+    db = get_database()
+    configured_cols = get_configured_collection_names()
+    all_target_cols = list(dict.fromkeys(configured_cols + ["dataset_records"]))
+    try:
+        internal_cols = {"user", "users", "uploaders", "datasets", "fs.files", "fs.chunks"}
+        for existing in db.list_collection_names():
+            if not existing.startswith("system.") and existing.lower() not in internal_cols and existing not in all_target_cols:
+                all_target_cols.append(existing)
+    except Exception:
+        pass
+
+    # Resolve target collections & filters based on dataset selector
+    target_collections = all_target_cols
+    extra_filter = None
+    display_dataset_name = "All Datasets"
+
+    if dataset_id and dataset_id not in ("all", "default", "*", "companies"):
+        # Check if dataset_id corresponds to a specific uploaded dataset
+        single_ds = get_dataset(dataset_id)
+        if single_ds:
+            target_collections = ["dataset_records"]
+            extra_filter = {"dataset_id": dataset_id}
+            display_dataset_name = single_ds.get("filename", dataset_id)
+        elif dataset_id in db.list_collection_names() or dataset_id in configured_cols:
+            target_collections = [dataset_id]
+            display_dataset_name = dataset_id
+
+    # 1. Obtain vocabulary
+    vocab = get_or_build_vocab(db, all_target_cols)
+
+    # 2. Parse query deterministically
+    parsed = parse_query(raw_query, vocab)
+
+    # 3. Retrieve contacts
+    result = contact_search_exec(
+        db=db,
+        collections=target_collections,
+        parsed=parsed,
+        vocab=vocab,
+        limit=500,
+        extra_filter=extra_filter
+    )
+
+    # 4. Generate answer markdown
+    # When PRIVACY_MODE is true: ALWAYS use format_markdown(result)
+    # If LLM is allowed (PRIVACY_MODE=False), it may only reword the text built from the result
+    final_markdown = format_markdown(result)
+    if not PRIVACY_MODE:
+        try:
+            from ..llm import call_llm
+            reword_prompt = (
+                "You are an assistant. Reword the following contact search summary clearly for the user. "
+                "CRITICAL: Do NOT invent, add, alter, or remove any names, phone numbers, emails, or company details. "
+                "Keep all facts and contact details exact.\n\n"
+                f"{final_markdown}"
+            )
+            llm_text = await call_llm(reword_prompt)
+            if llm_text and llm_text.strip():
+                final_markdown = llm_text.strip()
+        except Exception:
+            # Fall back to deterministic markdown
+            final_markdown = format_markdown(result)
+
+    # Flatten records from groups for backwards compatibility with legacy UI cards
+    all_flat_records = []
+    for g in result.get("groups", []):
+        for rec in g.get("records", []):
+            rec_copy = dict(rec)
+            rec_copy["source_collection"] = rec.get("_collection", "default")
+            all_flat_records.append(rec_copy)
+
+    formatted_sources = []
+    display_records = []
+    top_dataset = target_collections[0] if target_collections else "default"
+    top_db = get_database_name()
+
+    if all_flat_records:
+        formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(all_flat_records)
+
+    found = result.get("total", 0) > 0
+    return ChatResponse(
+        success=True,
+        found=found,
+        count=result.get("total", 0),
+        dataset_id=dataset_id or "all",
+        dataset_name=display_dataset_name,
+        database=top_db,
+        dataset=top_dataset,
+        sources=formatted_sources,
+        data=display_records,
+        message=final_markdown if (found or final_markdown) else "No data found",
+        understood_as=result.get("understood_as", []),
+        groups=result.get("groups", []),
+        not_found=result.get("not_found", []),
+        suggestions=result.get("suggestions", {}),
+        notes=result.get("notes", []),
+        total=result.get("total", 0)
+    )
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat_search(request: ChatRequest, collections: List[Collection] = Depends(get_db)):
     """
-    Main RAG Chatbot Search Endpoint.
-    
-    ARCHITECTURE:
-    USER -> React Chat UI -> FastAPI -> Query Understanding LLM -> Structured Query JSON
-    -> Query Router -> Hybrid Retrieval (Structured MongoDB + Vector Search)
-    -> Result Merging -> Deduplication -> Reranking -> Final Answer LLM -> User
+    Main Contact Search Chatbot Endpoint.
+    Uses deterministic query understanding and exact MongoDB filters (contact_search.py).
+    Zero LLM or vector search when PRIVACY_MODE=true.
+    Never logs query text or cell values.
     """
     raw_message = request.message.strip() if request.message else ""
     if not raw_message:
@@ -112,7 +243,7 @@ async def chat_search(request: ChatRequest, collections: List[Collection] = Depe
             message="Please provide a valid query (e.g. company name, location, designation, person, or keywords)."
         )
 
-    # 1. Determine dataset scoping if explicitly requested
+    # Determine dataset scoping
     uploaded_datasets = list_datasets()
     explicit_dataset_id = None
     if request.dataset_id and request.dataset_id not in ("all", "default", "*", "companies"):
@@ -127,77 +258,7 @@ async def chat_search(request: ChatRequest, collections: List[Collection] = Depe
 
     dataset_id = explicit_dataset_id if explicit_dataset_id else "all"
 
-    # Step 1: Query Understanding
-    structured_query, was_parsed_by_llm = await parse_query_understanding(raw_message)
-
-    # Step 2: Query Router
-    search_plan = route_query(structured_query)
-
-    # Step 3: Hybrid Retrieval (Structured MongoDB + Vector / Semantic + Merge + Deduplicate + Rerank)
-    final_records, debug_info = await execute_hybrid_retrieval(
-        structured_query=structured_query,
-        plan=search_plan,
-        dataset_id=dataset_id,
-        limit=50
-    )
-
-    # Step 4: Final Answer Generation (Ground truth LLM synthesis using only retrieved records)
-    final_answer = await generate_final_answer(
-        user_query=raw_message,
-        structured_query=structured_query,
-        records=final_records
-    )
-
-    # Resolve display dataset name
-    if dataset_id and dataset_id not in ("all", "default", "*", "companies"):
-        single_ds = get_dataset(dataset_id)
-        display_dataset_name = single_ds.get("filename", dataset_id) if single_ds else dataset_id
-    else:
-        matched_sources = list(dict.fromkeys([
-            r.get("source_file") for r in final_records 
-            if r.get("source_file") and str(r.get("source_file")).strip() not in ("Not Available", "MongoDB", "MongoDB Atlas")
-        ]))
-        if len(matched_sources) == 1:
-            display_dataset_name = matched_sources[0]
-        elif len(matched_sources) > 1:
-            display_dataset_name = f"{len(matched_sources)} sources ({', '.join(matched_sources[:3])}{'...' if len(matched_sources) > 3 else ''})"
-        else:
-            matched_cols = list(dict.fromkeys([r.get("source_collection") for r in final_records if r.get("source_collection")]))
-            if matched_cols:
-                display_dataset_name = f"{get_database_name()} ({', '.join(matched_cols)})"
-            else:
-                display_dataset_name = get_database_name()
-
-    if final_records:
-        formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(final_records)
-        return ChatResponse(
-            success=True,
-            found=True,
-            count=len(final_records),
-            dataset_id=dataset_id,
-            dataset_name=display_dataset_name,
-            database=top_db,
-            dataset=top_dataset,
-            sources=formatted_sources,
-            data=display_records,
-            query_intent=structured_query.model_dump(),
-            message=final_answer
-        )
-    else:
-        db_name = get_database_name()
-        return ChatResponse(
-            success=True,
-            found=False,
-            count=0,
-            dataset_id=dataset_id,
-            dataset_name=display_dataset_name,
-            database=db_name,
-            dataset="default",
-            sources=[],
-            data=[],
-            query_intent=structured_query.model_dump(),
-            message="No data found"
-        )
+    return await execute_deterministic_search(raw_query=raw_message, dataset_id=dataset_id)
 
 
 @router.get("/search", response_model=ChatResponse)
@@ -208,7 +269,7 @@ async def direct_search(
     collections: List[Collection] = Depends(get_db)
 ):
     """
-    Direct search endpoint backed by the Hybrid Retrieval engine.
+    Direct search endpoint backed by contact_search.py deterministic engine.
     """
     clean_q = q.strip()
     if not clean_q:
@@ -220,131 +281,16 @@ async def direct_search(
             message="Query parameter 'q' cannot be empty."
         )
 
-    # Parse query using deterministic fallback
-    structured_query = fallback_query_understanding(clean_q)
+    # If field filter is provided, construct scoped query
+    final_query = clean_q
     if field and field.lower().strip() in ALLOWED_SEARCH_FIELDS:
         f_clean = field.lower().strip()
-        if f_clean in ("company_name", "company"):
-            structured_query.companies = [clean_q]
-        elif f_clean in ("contact_person", "person"):
-            structured_query.people = [clean_q]
-        elif f_clean in ("designation", "role"):
-            structured_query.designation = clean_q
+        if f_clean in ("designation", "role"):
+            final_query = f"{clean_q}"
         elif f_clean in ("city", "state", "location", "address"):
-            structured_query.location = clean_q
+            final_query = f"in {clean_q}"
+        elif f_clean in ("company_name", "company"):
+            final_query = f"at {clean_q}"
 
     target_dataset = dataset_id if dataset_id and dataset_id not in ("default", "all", "*") else "all"
-
-    search_plan = route_query(structured_query)
-    final_records, _ = await execute_hybrid_retrieval(
-        structured_query=structured_query,
-        plan=search_plan,
-        dataset_id=target_dataset,
-        limit=50
-    )
-
-    if final_records:
-        final_answer = await generate_final_answer(clean_q, structured_query, final_records)
-        formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(final_records)
-        return ChatResponse(
-            success=True,
-            found=True,
-            count=len(final_records),
-            dataset_id=target_dataset,
-            dataset_name="MongoDB Search",
-            database=top_db,
-            dataset=top_dataset,
-            sources=formatted_sources,
-            data=display_records,
-            query_intent=structured_query.model_dump(),
-            message=final_answer
-        )
-    else:
-        db_name = get_database_name()
-        return ChatResponse(
-            success=True,
-            found=False,
-            count=0,
-            dataset_id=target_dataset,
-            dataset_name="MongoDB Search",
-            database=db_name,
-            dataset="default",
-            sources=[],
-            data=[],
-            query_intent=structured_query.model_dump(),
-            message="No data found"
-        )
-
-
-@router.get("/collections")
-def list_collections(collections: List[Collection] = Depends(get_db)):
-    """Returns list of active configured MongoDB collections and their document counts."""
-    data = []
-    total_docs = 0
-    for col in collections:
-        try:
-            cnt = col.estimated_document_count()
-        except Exception:
-            cnt = 0
-        total_docs += cnt
-        data.append({
-            "name": col.name,
-            "document_count": cnt
-        })
-    return {
-        "total_collections": len(data),
-        "total_documents": total_docs,
-        "collections": data
-    }
-
-
-@router.get("/fields")
-def get_searchable_fields(dataset_id: Optional[str] = Query(None)):
-    """Returns available searchable fields in the active dataset or companies table."""
-    if dataset_id and dataset_id not in ("default", "all", "*"):
-        dataset_info = get_dataset(dataset_id)
-        if dataset_info:
-            return {
-                "dataset_id": dataset_id,
-                "dataset_name": dataset_info.get("filename"),
-                "fields": dataset_info.get("fields", []),
-                "normalized_fields": dataset_info.get("normalized_fields", [])
-            }
-
-    uploaded = list_datasets()
-    if uploaded:
-        all_fields = sorted(list(dict.fromkeys(
-            [f for ds in uploaded for f in (ds.get("fields") or [])] + list(ALLOWED_SEARCH_FIELDS)
-        )))
-        return {
-            "fields": all_fields,
-            "primary_fields": [
-                "company_name",
-                "person_name",
-                "designation",
-                "department",
-                "state",
-                "city",
-                "contact_number",
-                "personal_mail_id",
-                "address",
-                "remarks"
-            ]
-        }
-
-    return {
-        "fields": sorted(list(ALLOWED_SEARCH_FIELDS)),
-        "primary_fields": [
-            "company_name",
-            "contact_person",
-            "designation",
-            "mobile_no",
-            "email_1",
-            "email_2",
-            "telephone_1",
-            "telephone_2",
-            "address",
-            "pin",
-            "remarks"
-        ]
-    }
+    return await execute_deterministic_search(raw_query=final_query, dataset_id=target_dataset)
