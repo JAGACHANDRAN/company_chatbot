@@ -1204,14 +1204,28 @@ function exportToPdf(filename, companies) {
   }
 }
 
-function ExportDropdown({ companies, filename = 'calispec_data', label = 'Export', className = '' }) {
+function ExportDropdown({
+  companies,
+  filename = 'calispec_data',
+  label = 'Export',
+  className = '',
+  direction = 'auto',
+  onOpenChange
+}) {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef(null);
+
+  const toggleOpen = (nextState) => {
+    setOpen(nextState);
+    if (onOpenChange) {
+      onOpenChange(nextState);
+    }
+  };
 
   useEffect(() => {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setOpen(false);
+        toggleOpen(false);
       }
     }
     if (open) {
@@ -1231,39 +1245,60 @@ function ExportDropdown({ companies, filename = 'calispec_data', label = 'Export
     } else if (format === 'pdf') {
       exportToPdf(cleanFilename, companies);
     }
-    setOpen(false);
+    toggleOpen(false);
   };
 
+  const isUp = direction === 'up' || (direction === 'auto' && (label.toLowerCase().includes('all') || label.toLowerCase().includes('response')));
+  const positionClasses = isUp
+    ? 'bottom-full mb-2 right-0 origin-bottom-right'
+    : 'top-full mt-2 right-0 origin-top-right';
+
   return (
-    <div className={`relative inline-block text-left ${className}`} ref={dropdownRef}>
+    <div className={`relative inline-block text-left ${open ? 'z-50' : 'z-10'} ${className}`} ref={dropdownRef}>
       <button
         type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 text-slate-600 text-xs font-medium transition-colors cursor-pointer shadow-2xs"
+        onClick={() => toggleOpen(!open)}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all duration-150 cursor-pointer shadow-2xs ${
+          open
+            ? 'bg-sky-50 text-sky-700 border-sky-300 ring-2 ring-sky-200/50'
+            : 'bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 text-slate-600'
+        }`}
         title="Export response options (CSV, Excel, PDF)"
+        aria-expanded={open}
       >
         <span className="material-symbols-outlined text-sm text-slate-500">file_download</span>
         <span>{label}</span>
-        <span className="material-symbols-outlined text-xs text-slate-400">
-          {open ? 'expand_less' : 'expand_more'}
+        <span
+          className="material-symbols-outlined text-xs text-slate-400 transition-transform duration-200"
+          style={{ transform: open ? 'rotate(180deg)' : 'none' }}
+        >
+          expand_more
         </span>
       </button>
 
       {open && (
-        <div className="absolute right-0 bottom-full mb-1.5 sm:bottom-auto sm:top-full sm:mt-1.5 w-44 bg-white border border-slate-200/90 rounded-xl shadow-xl z-50 py-1.5 animate-fadeIn backdrop-blur-md">
-          <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
-            Export Format
+        <div
+          className={`absolute ${positionClasses} w-52 bg-white/98 backdrop-blur-md border border-slate-200/90 rounded-xl shadow-2xl z-50 py-1.5 animate-fadeIn`}
+          style={{
+            boxShadow: '0 12px 30px -4px rgba(15, 23, 42, 0.18), 0 4px 10px -2px rgba(15, 23, 42, 0.08)',
+          }}
+        >
+          <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100 flex items-center justify-between">
+            <span>Export Format</span>
+            <span className="material-symbols-outlined text-xs text-slate-400">download</span>
           </div>
 
           {/* CSV Option */}
           <button
             type="button"
             onClick={() => handleDownload('csv')}
-            className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-700 flex items-center gap-2.5 transition-colors cursor-pointer"
+            className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-800 flex items-center gap-2.5 transition-colors cursor-pointer group"
           >
-            <span className="material-symbols-outlined text-base text-emerald-600">table_view</span>
+            <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 group-hover:bg-emerald-100 transition-colors">
+              <span className="material-symbols-outlined text-base">table_view</span>
+            </div>
             <div>
-              <div className="font-semibold leading-tight">CSV</div>
+              <div className="font-semibold leading-tight text-slate-800 group-hover:text-sky-900">CSV</div>
               <div className="text-[10px] text-slate-400">Comma-separated (.csv)</div>
             </div>
           </button>
@@ -1272,11 +1307,13 @@ function ExportDropdown({ companies, filename = 'calispec_data', label = 'Export
           <button
             type="button"
             onClick={() => handleDownload('excel')}
-            className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-700 flex items-center gap-2.5 transition-colors cursor-pointer"
+            className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-800 flex items-center gap-2.5 transition-colors cursor-pointer group"
           >
-            <span className="material-symbols-outlined text-base text-emerald-700">grid_on</span>
+            <div className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 group-hover:bg-emerald-100 transition-colors">
+              <span className="material-symbols-outlined text-base">grid_on</span>
+            </div>
             <div>
-              <div className="font-semibold leading-tight">Excel</div>
+              <div className="font-semibold leading-tight text-slate-800 group-hover:text-sky-900">Excel</div>
               <div className="text-[10px] text-slate-400">Spreadsheet (.xls)</div>
             </div>
           </button>
@@ -1285,11 +1322,13 @@ function ExportDropdown({ companies, filename = 'calispec_data', label = 'Export
           <button
             type="button"
             onClick={() => handleDownload('pdf')}
-            className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-700 flex items-center gap-2.5 transition-colors cursor-pointer"
+            className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-sky-50 hover:text-sky-800 flex items-center gap-2.5 transition-colors cursor-pointer group"
           >
-            <span className="material-symbols-outlined text-base text-rose-600">picture_as_pdf</span>
+            <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0 group-hover:bg-rose-100 transition-colors">
+              <span className="material-symbols-outlined text-base">picture_as_pdf</span>
+            </div>
             <div>
-              <div className="font-semibold leading-tight">PDF</div>
+              <div className="font-semibold leading-tight text-slate-800 group-hover:text-sky-900">PDF</div>
               <div className="text-[10px] text-slate-400">Document (.pdf)</div>
             </div>
           </button>
@@ -1299,7 +1338,7 @@ function ExportDropdown({ companies, filename = 'calispec_data', label = 'Export
   );
 }
 
-function StrictCompanyCard({ company, index }) {
+function StrictCompanyCard({ company, index, totalCount, onOpenChange }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -1369,6 +1408,8 @@ function StrictCompanyCard({ company, index }) {
             companies={[company]}
             filename={`${company.companyName || 'company'}_details`}
             label="Export"
+            direction="down"
+            onOpenChange={onOpenChange}
           />
         </div>
       </div>
@@ -1588,6 +1629,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
   const isUser = message.role === 'user';
   const now = new Date();
   const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+  const [hasOpenDropdown, setHasOpenDropdown] = useState(false);
 
   // 1. User Message Row with Copy and Edit controls underneath
   if (isUser) {
@@ -1600,7 +1642,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
     };
 
     return (
-      <div className="flex flex-col items-end w-full group animate-fadeIn">
+      <div className="flex flex-col items-end w-full group animate-fadeIn relative z-0">
         <div className="bg-gradient-to-r from-sky-700 via-sky-600 to-blue-600 text-white rounded-2xl rounded-tr-xs p-4 shadow-md shadow-sky-900/10 border border-sky-500/30 max-w-2xl text-left">
           <p className="font-body-md text-sm md:text-base leading-relaxed text-white selection:bg-sky-200 selection:text-sky-900">
             {message.content}
@@ -1747,7 +1789,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
   }
 
   return (
-    <div className="flex flex-col items-start w-full animate-fadeIn">
+    <div className={`flex flex-col items-start w-full animate-fadeIn relative ${hasOpenDropdown ? 'z-40' : 'z-10'}`}>
       {/* Bot Header Line */}
       <div className="flex items-center gap-2.5 mb-2 pl-1">
         <div className="w-7 h-7 rounded-full bg-sky-600 text-white flex items-center justify-center shadow-md">
@@ -1817,7 +1859,13 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
             <div className="space-y-4 w-full">
 
               {parsedCompanies.map((comp, idx) => (
-                <StrictCompanyCard key={idx} company={comp} index={idx} totalCount={parsedCompanies.length} />
+                <StrictCompanyCard
+                  key={idx}
+                  company={comp}
+                  index={idx}
+                  totalCount={parsedCompanies.length}
+                  onOpenChange={setHasOpenDropdown}
+                />
               ))}
 
               {/* If some companies were not found in multi-company search */}
@@ -1871,6 +1919,8 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
                     companies={parsedCompanies}
                     filename="calispec_response_data"
                     label={parsedCompanies.length > 1 ? "Export All" : "Export Response"}
+                    direction="up"
+                    onOpenChange={setHasOpenDropdown}
                   />
                 </div>
               </div>
@@ -1950,6 +2000,8 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
                   companies={[{ companyName: 'Search_Result', rawText: text, contacts: [] }]}
                   filename="calispec_response_data"
                   label="Export"
+                  direction="up"
+                  onOpenChange={setHasOpenDropdown}
                 />
               </div>
             </div>
