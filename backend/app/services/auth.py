@@ -214,6 +214,45 @@ def authenticate_user(email: str, password: str) -> Optional[dict]:
     }
 
 
+def create_user(email: str, password: str, role: str = ROLE_CHAT_USER) -> dict:
+    """Creates or updates a user in the 'users' collection with hashed password."""
+    clean_email = email.strip().lower()
+    clean_pwd = password.strip()
+    role_clean = role.strip().upper()
+    if role_clean not in ALLOWED_ROLES:
+        role_clean = ROLE_CHAT_USER
+    
+    db = get_database()
+    user_col = db[USERS_COLLECTION]
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    
+    existing = user_col.find_one({"email": clean_email})
+    user_id = existing.get("user_id") if existing else f"usr_{uuid.uuid4().hex[:10]}"
+    hashed_pwd = hash_password(clean_pwd)
+    
+    user_doc = {
+        "user_id": user_id,
+        "email": clean_email,
+        "password_hash": hashed_pwd,
+        "role": role_clean,
+        "user_type": "uploader" if role_clean == ROLE_DATA_UPLOADER else "chat_user",
+        "last_login": now_iso
+    }
+    user_col.update_one(
+        {"email": clean_email},
+        {
+            "$set": user_doc,
+            "$setOnInsert": {"created_at": now_iso}
+        },
+        upsert=True
+    )
+    return {
+        "user_id": user_id,
+        "email": clean_email,
+        "role": role_clean
+    }
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme)
 ) -> dict:

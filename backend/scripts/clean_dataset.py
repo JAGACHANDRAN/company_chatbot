@@ -23,8 +23,7 @@ if str(scripts_dir) not in sys.path:
     sys.path.insert(0, str(scripts_dir))
 
 import pandas as pd
-
-import cleaner_core as cc
+from app.services import data_cleaner as cc
 
 
 def main():
