@@ -55,9 +55,9 @@ def generate_local_embedding(text: str, dim: int = VECTOR_DIMENSIONS) -> List[fl
 async def get_embedding(text: str) -> List[float]:
     """
     Retrieves dense vector embedding for text using configured provider.
-    When PRIVACY_MODE is true, skips external API calls and uses local embedding.
+    When PRIVACY_MODE is true or external API is offline/unavailable, uses local deterministic embedding.
     """
-    clean = text.strip()
+    clean = text.strip() if text else ""
     if not clean:
         return [0.0] * VECTOR_DIMENSIONS
 
@@ -105,24 +105,43 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 def build_record_search_text(record: Dict[str, Any]) -> str:
     """
     Constructs comprehensive search_text for a record from all meaningful text fields:
-    Company Name, Person Name, Designation, Department, State, City, Country, Address, Remarks.
+    Company Name, Person Name, Designation, Department, Location, City, State, Country,
+    Address, Phone, Email, Remarks, Group, Source File.
+    Supports top-level document fields, 'data', 'normalized_data', and 'raw_data'.
     """
-    data = record.get("data") if isinstance(record.get("data"), dict) else record
+    data = record.get("data") if isinstance(record.get("data"), dict) else {}
+    norm_data = record.get("normalized_data") if isinstance(record.get("normalized_data"), dict) else {}
+    raw_data = record.get("raw_data") if isinstance(record.get("raw_data"), dict) else {}
+
+    def get_field_val(*keys: str) -> Optional[str]:
+        for k in keys:
+            for src in (record, data, norm_data, raw_data):
+                if isinstance(src, dict) and k in src:
+                    val = src.get(k)
+                    if val and not isinstance(val, (dict, list)):
+                        s = str(val).strip()
+                        if s and s.lower() not in ("none", "null", "not available", "n/a", "-", "nan", "undefined"):
+                            return s
+        return None
 
     fields = [
-        data.get("company_name") or data.get("Company Name"),
-        data.get("person_name") or data.get("Contact Person") or data.get("name"),
-        data.get("designation") or data.get("Designation") or data.get("role"),
-        data.get("department") or data.get("Department"),
-        data.get("city") or data.get("City"),
-        data.get("state") or data.get("State"),
-        data.get("country") or data.get("Country"),
-        data.get("location") or data.get("Location") or data.get("Address"),
-        data.get("group") or data.get("Group"),
-        data.get("remarks") or data.get("Remarks"),
+        get_field_val("company", "Company Name", "company_name", "business_name", "Firm", "Organization", "Company", "Client", "norm_company"),
+        get_field_val("person", "Contact Person", "person_name", "name", "Name", "Full Name", "Employee Name", "first_name"),
+        get_field_val("designation", "Designation", "role", "Role", "Job Title", "Position", "Title"),
+        get_field_val("department", "Department", "division", "Division"),
+        get_field_val("city", "City", "Town"),
+        get_field_val("state", "State", "Province"),
+        get_field_val("country", "Country"),
+        get_field_val("location", "Location", "Address", "Company Address", "address", "PIN", "pin"),
+        get_field_val("phone", "phone_2", "Mobile No.", "mobile_no", "telephone_1", "telephone_2", "contact_number", "Tel"),
+        get_field_val("email", "email_2", "Email 1", "Email 2", "personal_mail_id", "Email"),
+        get_field_val("linkedin", "LinkedIn", "LinkedIn URL", "linkedin_url"),
+        get_field_val("group", "Group"),
+        get_field_val("remarks", "Remarks"),
+        get_field_val("source_file", "Source File", "source_filename", "filename"),
     ]
 
-    clean_parts = [str(f).strip() for f in fields if f and str(f).strip().lower() not in ("none", "null", "not available", "n/a", "-")]
+    clean_parts = [f for f in fields if f]
     return " ".join(clean_parts).strip()
 
 
@@ -130,24 +149,22 @@ async def execute_vector_search(
     query_text: str,
     dataset_id: Optional[str] = "all",
     limit: int = 50,
-    min_similarity: float = 0.25
+    min_similarity: float = 0.15
 ) -> List[Dict[str, Any]]:
     """
     Executes vector/semantic search across database records.
-    When PRIVACY_MODE is true, skips vector search completely and returns empty list.
-    1. Checks if MongoDB Atlas Vector Search index ($vectorSearch) is available.
-    2. If not, performs in-memory cosine similarity against stored or computed record embeddings.
+    1. Generates query vector embedding.
+    2. Checks if MongoDB Atlas Vector Search index ($vectorSearch) is available.
+    3. If not, performs in-memory cosine similarity against stored or computed record embeddings.
     Returns normalized records sorted by descending relevance.
     """
-    if PRIVACY_MODE:
-        return []
-
     if not query_text or not query_text.strip():
         return []
 
     query_embedding = await get_embedding(query_text)
     db = get_database()
     results: List[Tuple[float, Dict[str, Any]]] = []
+    seen_ids = set()
 
     # 1. Attempt MongoDB Atlas $vectorSearch pipeline on dataset_records
     atlas_vector_success = False
@@ -165,15 +182,45 @@ async def execute_vector_search(
         ]
         cursor = db[DATASET_RECORDS_COLLECTION].aggregate(pipeline)
         for doc in cursor:
-            norm_rec = normalize_record_fields(doc)
-            results.append((1.0, norm_rec))
+            doc_id = str(doc.get("_id", ""))
+            if doc_id not in seen_ids:
+                seen_ids.add(doc_id)
+                norm_rec = normalize_record_fields(doc)
+                results.append((1.0, norm_rec))
         if results:
             atlas_vector_success = True
     except Exception:
-        # Atlas Vector Search index does not exist or is unsupported on cluster
         atlas_vector_success = False
 
-    # 2. Local Vector Similarity Fallback
+    # 1b. Also attempt $vectorSearch on configured collections if Atlas Vector Search is available
+    if atlas_vector_success:
+        try:
+            collections = get_collections()
+            for col in collections:
+                pipeline = [
+                    {
+                        "$vectorSearch": {
+                            "index": VECTOR_INDEX_NAME,
+                            "path": "embedding",
+                            "queryVector": query_embedding,
+                            "numCandidates": limit * 2,
+                            "limit": limit
+                        }
+                    }
+                ]
+                cursor = col.aggregate(pipeline)
+                for doc in cursor:
+                    doc_id = str(doc.get("_id", ""))
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        doc_copy = dict(doc)
+                        doc_copy["source_collection"] = col.name
+                        norm_rec = normalize_record_fields(doc_copy)
+                        results.append((1.0, norm_rec))
+        except Exception:
+            pass
+
+    # 2. Local Vector Similarity Fallback (when Atlas Vector Search index is not present or unsupported)
     if not atlas_vector_success:
         # Retrieve candidate records from dataset_records
         try:
@@ -185,32 +232,38 @@ async def execute_vector_search(
             uploaded_datasets = list_datasets()
             ds_name_map = {ds.get("dataset_id"): ds.get("filename", "Uploaded Dataset") for ds in uploaded_datasets}
 
-            # Fetch sample / candidates (up to 300) for vector matching
             cursor = ds_col.find(ds_query).limit(300)
             for doc in cursor:
                 rec_embedding = doc.get("embedding")
                 search_text = doc.get("search_text") or build_record_search_text(doc)
 
-                if not rec_embedding or len(rec_embedding) != len(query_embedding):
+                if not rec_embedding or not isinstance(rec_embedding, list) or len(rec_embedding) != len(query_embedding):
                     rec_embedding = generate_local_embedding(search_text, dim=len(query_embedding))
 
                 sim = cosine_similarity(query_embedding, rec_embedding)
                 if sim >= min_similarity:
                     ds_name = ds_name_map.get(doc.get("dataset_id"), "Uploaded Dataset")
                     norm_rec = normalize_record_fields(doc, source_file=ds_name)
-                    results.append((sim, norm_rec))
+                    doc_id = str(doc.get("_id", ""))
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        results.append((sim, norm_rec))
         except Exception as e:
-            print(f"[Local Vector Search Warning - datasets] {e}")
+            pass
 
-        # Search across collection candidates
+        # Search across configured MongoDB collections
         try:
             collections = get_collections()
             db_name = get_database_name()
             for col in collections:
-                col_cursor = col.find().limit(50)
+                col_cursor = col.find().limit(200)
                 for raw_doc in col_cursor:
-                    search_text = build_record_search_text(raw_doc)
-                    rec_embedding = generate_local_embedding(search_text, dim=len(query_embedding))
+                    rec_embedding = raw_doc.get("embedding")
+                    search_text = raw_doc.get("search_text") or build_record_search_text(raw_doc)
+
+                    if not rec_embedding or not isinstance(rec_embedding, list) or len(rec_embedding) != len(query_embedding):
+                        rec_embedding = generate_local_embedding(search_text, dim=len(query_embedding))
+
                     sim = cosine_similarity(query_embedding, rec_embedding)
                     if sim >= min_similarity:
                         doc_copy = dict(raw_doc)
@@ -227,9 +280,12 @@ async def execute_vector_search(
                         )
                         doc_copy["source_file"] = s_file_col
                         norm_rec = normalize_record_fields(doc_copy, source_file=s_file_col)
-                        results.append((sim, norm_rec))
+                        doc_id = str(raw_doc.get("_id", ""))
+                        if doc_id not in seen_ids:
+                            seen_ids.add(doc_id)
+                            results.append((sim, norm_rec))
         except Exception as e:
-            print(f"[Local Vector Search Warning - collections] {e}")
+            pass
 
     # Sort by descending similarity score
     results.sort(key=lambda x: x[0], reverse=True)

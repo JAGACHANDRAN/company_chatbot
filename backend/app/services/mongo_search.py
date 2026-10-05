@@ -57,7 +57,7 @@ def build_company_clauses(
     clauses = []
 
     fields_to_check = [
-        "Company Name", "company_name", "Company", "company", "business_name", "Organization", "Firm"
+        "Company Name", "company_name", "Company", "company", "business_name", "Organization", "Firm", "norm_company"
     ]
 
     for v in variants:
@@ -81,7 +81,7 @@ def build_person_clauses(
     """
     reg = build_regex_clause(person_name, exact=False)
     fields_to_check = [
-        "Person Name", "person_name", "Contact Person", "contact_person", "name", "Full Name", "Employee Name"
+        "Person Name", "person_name", "Contact Person", "contact_person", "person", "name", "Name", "Full Name", "Employee Name"
     ]
     clauses = []
     for f in fields_to_check:
@@ -167,6 +167,69 @@ def build_department_clauses(
     return clauses
 
 
+def build_email_availability_clauses(
+    required: bool,
+    prefix_data: bool = True
+) -> List[Dict[str, Any]]:
+    """Builds clauses to filter records by email presence."""
+    fields = [
+        "Email", "email", "Email ID", "email_id", "Email Address", "email_address",
+        "Email 1", "email_1", "Email 2", "email_2", "Personal Mail ID", "personal_mail_id", "norm_email"
+    ]
+    clauses = []
+    if required:
+        reg = {"$regex": "@"}
+        for f in fields:
+            if prefix_data:
+                clauses.append({f"data.{f}": reg})
+                clauses.append({f"normalized_data.{re.sub(r'[^a-zA-Z0-9_]', '_', f.lower())}": reg})
+            else:
+                clauses.append({f: reg})
+    return clauses
+
+
+def build_phone_availability_clauses(
+    required: bool,
+    prefix_data: bool = True
+) -> List[Dict[str, Any]]:
+    """Builds clauses to filter records by phone presence."""
+    fields = [
+        "Phone", "phone", "Mobile", "mobile", "Contact", "contact", "Contact Number", "contact_number",
+        "Telephone", "telephone", "phone_2", "mobile_no", "telephone_1", "telephone_2", "norm_phone"
+    ]
+    clauses = []
+    if required:
+        reg = {"$regex": r"\d{5,}"}
+        for f in fields:
+            if prefix_data:
+                clauses.append({f"data.{f}": reg})
+                clauses.append({f"normalized_data.{re.sub(r'[^a-zA-Z0-9_]', '_', f.lower())}": reg})
+            else:
+                clauses.append({f: reg})
+    return clauses
+
+
+def build_linkedin_availability_clauses(
+    required: bool,
+    prefix_data: bool = True
+) -> List[Dict[str, Any]]:
+    """Builds clauses to filter records by LinkedIn profile presence."""
+    fields = [
+        "LinkedIn", "linkedin", "LinkedIn URL", "linkedin_url", "LinkedIn Profile", "linkedin_profile",
+        "profile_url", "Profile URL", "norm_linkedin"
+    ]
+    clauses = []
+    if required:
+        reg = {"$regex": r"linkedin\.com|/in/", "$options": "i"}
+        for f in fields:
+            if prefix_data:
+                clauses.append({f"data.{f}": reg})
+                clauses.append({f"normalized_data.{re.sub(r'[^a-zA-Z0-9_]', '_', f.lower())}": reg})
+            else:
+                clauses.append({f: reg})
+    return clauses
+
+
 def build_structured_mongo_filter(
     structured_query: StructuredQuery,
     is_dataset_records: bool = True,
@@ -174,7 +237,7 @@ def build_structured_mongo_filter(
 ) -> Dict[str, Any]:
     """
     Constructs an injection-safe, highly accurate MongoDB query filter from a StructuredQuery.
-    Combines conditions using logical AND across distinct dimensions (companies, people, location, role),
+    Combines conditions using logical AND across distinct dimensions (companies, people, location, role, availability),
     and logical OR within multi-valued entities (e.g. company A OR company B).
     """
     and_conditions: List[Dict[str, Any]] = []
@@ -225,6 +288,22 @@ def build_structured_mongo_filter(
         dept_clauses = build_department_clauses(structured_query.department, prefix_data=is_dataset_records)
         if dept_clauses:
             and_conditions.append({"$or": dept_clauses})
+
+    # 6. Availability Filters
+    if structured_query.email_required is True:
+        email_clauses = build_email_availability_clauses(True, prefix_data=is_dataset_records)
+        if email_clauses:
+            and_conditions.append({"$or": email_clauses})
+
+    if structured_query.phone_required is True:
+        phone_clauses = build_phone_availability_clauses(True, prefix_data=is_dataset_records)
+        if phone_clauses:
+            and_conditions.append({"$or": phone_clauses})
+
+    if structured_query.linkedin_required is True:
+        linkedin_clauses = build_linkedin_availability_clauses(True, prefix_data=is_dataset_records)
+        if linkedin_clauses:
+            and_conditions.append({"$or": linkedin_clauses})
 
     if not and_conditions:
         return {}

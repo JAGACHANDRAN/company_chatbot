@@ -365,27 +365,12 @@ def format_location_lines(loc: Dict[str, Optional[str]], prefix: str = "- ") -> 
     return lines
 
 
-def format_strict_company_records(records: List[Dict[str, Any]]) -> str:
+def format_strict_company_records(
+    records: List[Dict[str, Any]],
+    structured_query: Optional[StructuredQuery] = None
+) -> str:
     """
     STRICT RESPONSE FORMATTER for retrieved company/contact data.
-    
-    Adheres strictly to:
-    - Preserves association between result and its source file.
-    - Source File displayed at the very top: Source File: <source filename>
-    - If multiple records come from the same source file, shows source file once at the beginning.
-    - If records come from different source files, keeps them separate to preserve association.
-    - Format:
-        Source File: <file>
-        
-        Company Name: <name>
-        
-        Contact Person 1:
-        - Name: ...
-        - Designation: ...
-        - Contact Number 1: ...
-        - Email 1: ...
-        - City: ...
-        - State: ...
     """
     if not records:
         return "No data found"
@@ -478,23 +463,28 @@ def format_strict_company_records(records: List[Dict[str, Any]]) -> str:
                     "state": p_loc["state"]
                 })
 
+        if structured_query:
+            if structured_query.email_required is True:
+                contacts = [c for c in contacts if c.get("emails")]
+            elif structured_query.email_required is False:
+                contacts = [c for c in contacts if not c.get("emails")]
+
+            if structured_query.phone_required is True:
+                contacts = [c for c in contacts if c.get("numbers")]
+            elif structured_query.phone_required is False:
+                contacts = [c for c in contacts if not c.get("numbers")]
+
+            if structured_query.linkedin_required is True:
+                contacts = [c for c in contacts if c.get("linkedin")]
+            elif structured_query.linkedin_required is False:
+                contacts = [c for c in contacts if not c.get("linkedin")]
+
         if not contacts:
-            contacts.append({
-                "name": None,
-                "designation": None,
-                "linkedin": None,
-                "numbers": [],
-                "emails": [],
-                "address": None,
-                "city": None,
-                "state": None
-            })
+            continue
 
         comp_lines = []
 
         # 1. Source Header:
-        # If there is a genuine column named source file, display it.
-        # Otherwise, display the database name and collection name from which data was retrieved!
         if s_file:
             if s_sheet and s_sheet != "Not Available":
                 comp_lines.append(f"Source File: {s_file} | {s_sheet}")
@@ -544,16 +534,93 @@ def format_strict_company_records(records: List[Dict[str, Any]]) -> str:
 
         formatted_groups.append("\n".join(comp_lines))
 
+    if not formatted_groups:
+        return "No data found"
+
     return "\n\n\n".join(formatted_groups).strip()
 
 
-def deterministic_synthesize(records: List[Dict[str, Any]]) -> str:
+def generate_no_data_message(user_query: str, structured_query: Optional[StructuredQuery] = None) -> str:
+    """
+    Generates deterministic, truthful, zero-hallucination no-data explanations
+    matching the user's specific query parameters.
+    """
+    if not structured_query:
+        return "No matching records found in the database."
+
+    subject_parts = []
+
+    # Check designation vs person vs company
+    if structured_query.designation:
+        desig = structured_query.designation.strip()
+        # Respect plural wording in query if present
+        if "managers" in user_query.lower() and desig.lower().endswith("manager"):
+            subject_parts.append(f"{desig}s")
+        elif "heads" in user_query.lower() and desig.lower().endswith("head"):
+            subject_parts.append(f"{desig}s")
+        elif "directors" in user_query.lower() and desig.lower().endswith("director"):
+            subject_parts.append(f"{desig}s")
+        elif "officers" in user_query.lower() and desig.lower().endswith("officer"):
+            subject_parts.append(f"{desig}s")
+        else:
+            subject_parts.append(desig)
+    elif structured_query.people:
+        subject_parts.append(", ".join(structured_query.people))
+    elif structured_query.companies:
+        comps = ", ".join(structured_query.companies)
+        if "companies" in user_query.lower() or "group" in user_query.lower():
+            subject_parts.append(f"{comps} companies")
+        elif "company" in user_query.lower():
+            subject_parts.append(f"{comps} company")
+        else:
+            subject_parts.append(f"{comps} companies")
+    else:
+        subject_parts.append("companies")
+
+    # At company (if designation or person was specified)
+    if structured_query.companies and (structured_query.designation or structured_query.people):
+        subject_parts.append(f"at {', '.join(structured_query.companies)}")
+
+    # Location (City, State, Location)
+    if structured_query.city:
+        subject_parts.append(f"in {structured_query.city}")
+    elif structured_query.state:
+        subject_parts.append(f"in {structured_query.state}")
+    elif structured_query.location:
+        subject_parts.append(f"in {structured_query.location}")
+
+    # Availability modifiers
+    if structured_query.email_required is True:
+        subject_parts.append("with an available email address")
+    elif structured_query.email_required is False:
+        subject_parts.append("without an email address")
+
+    if structured_query.phone_required is True:
+        subject_parts.append("with contact numbers")
+    elif structured_query.phone_required is False:
+        subject_parts.append("without contact numbers")
+
+    if structured_query.linkedin_required is True:
+        subject_parts.append("with a LinkedIn profile")
+    elif structured_query.linkedin_required is False:
+        subject_parts.append("without a LinkedIn profile")
+
+    target_desc = " ".join(subject_parts).strip()
+    return f"No data available for {target_desc}."
+
+
+def deterministic_synthesize(
+    records: List[Dict[str, Any]],
+    structured_query: Optional[StructuredQuery] = None
+) -> str:
     """
     Deterministic fallback synthesizer formatting retrieved company/contact records
     strictly preserving source attribution, hyperlinks, sequential numbering, and
     hiding internal database fields without calling any LLM.
     """
-    return format_strict_company_records(records)
+    if not records:
+        return "No data found"
+    return format_strict_company_records(records, structured_query=structured_query)
 
 
 def generate_deterministic_answer(
@@ -564,7 +631,12 @@ def generate_deterministic_answer(
     """
     Deterministic synthesis enforcing the STRICT RESPONSE FORMATTER specification.
     """
-    return deterministic_synthesize(records)
+    if not records:
+        return "No data found"
+    res = deterministic_synthesize(records, structured_query=structured_query)
+    if res == "No data found":
+        return generate_no_data_message(user_query, structured_query)
+    return res
 
 
 def generate_response(
@@ -578,9 +650,12 @@ def generate_response(
     When PRIVACY_MODE is true: ALWAYS uses the deterministic fallback synthesizer
     and NEVER calls llm.py or any external model.
     """
-    if PRIVACY_MODE:
-        return deterministic_synthesize(records)
-    return deterministic_synthesize(records)
+    if not records:
+        return generate_no_data_message(query, structured_query)
+    res = deterministic_synthesize(records, structured_query=structured_query)
+    if res == "No data found":
+        return generate_no_data_message(query, structured_query)
+    return res
 
 
 async def generate_final_answer(
@@ -594,13 +669,12 @@ async def generate_final_answer(
     When PRIVACY_MODE is true, always uses deterministic synthesis and never calls llm.py.
     """
     if not records:
-        return "No data found"
+        return generate_no_data_message(user_query, structured_query)
 
-    if PRIVACY_MODE:
-        return deterministic_synthesize(records)
+    res = deterministic_synthesize(records, structured_query=structured_query)
+    if res == "No data found":
+        return generate_no_data_message(user_query, structured_query)
 
-    # Deterministic formatter guarantees 100% adherence to all rules, sequential numbering,
-    # deduplication, zero hallucination, and confidential database protection.
-    return deterministic_synthesize(records)
+    return res
 
 

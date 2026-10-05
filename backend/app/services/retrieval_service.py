@@ -12,6 +12,7 @@ from ..utils.normalization import (
     normalize_text,
 )
 from .reranker import rerank_records
+from .response_generator import extract_emails, extract_contact_numbers, extract_linkedin
 
 
 def validate_record_relevance(
@@ -26,7 +27,8 @@ def validate_record_relevance(
        Rejects unrelated companies (e.g. ACCUMEN AUTOMATION for 2D INC).
     2. Explicit person query: record must match requested person (is_person_match).
     3. Location constraint: record must belong to requested state/city (hard filter).
-    4. Hybrid constraints: department/role filter.
+    4. Designation / Role constraint.
+    5. Availability filters (email_required, phone_required, linkedin_required).
     """
     raw = record.get("raw_data") or {}
 
@@ -59,7 +61,6 @@ def validate_record_relevance(
             return False
 
     # 3. Location constraint (Hard filter)
-    # "A record from Karnataka must not appear simply because its vector similarity is high."
     if structured_query.state:
         target_state = normalize_location_string(structured_query.state)
         rec_state = normalize_location_string(record.get("state"))
@@ -91,13 +92,53 @@ def validate_record_relevance(
         if not city_match:
             return False
 
-    # 4. Department / Designation for hybrid queries
-    if structured_query.department and (plan is None or plan.search_strategy == "hybrid"):
+    # 4. Designation constraint
+    if structured_query.designation:
+        target_desig = normalize_text(structured_query.designation)
+        rec_desig = normalize_text(record.get("designation") or raw.get("Designation") or raw.get("designation") or "")
+        rec_role = normalize_text(record.get("role") or raw.get("Role") or raw.get("role") or "")
+        if target_desig not in rec_desig and target_desig not in rec_role:
+            # Check for core tokens match (e.g., 'quality' and 'manager')
+            desig_tokens = [t for t in target_desig.split() if len(t) > 2]
+            combined_desig = f"{rec_desig} {rec_role}"
+            if not all(token in combined_desig for token in desig_tokens):
+                return False
+
+    # 5. Department / Hybrid filter
+    if structured_query.department and not structured_query.designation and (plan is None or plan.search_strategy == "hybrid"):
         target_dept = normalize_text(structured_query.department)
         rec_dept = normalize_text(record.get("department"))
         rec_desig = normalize_text(record.get("designation"))
         raw_desig = normalize_text(raw.get("Designation", ""))
         if target_dept not in rec_dept and target_dept not in rec_desig and target_dept not in raw_desig:
+            return False
+
+    # 6. Availability filters
+    if structured_query.email_required is True:
+        emails = extract_emails(record)
+        if not emails:
+            return False
+    elif structured_query.email_required is False:
+        emails = extract_emails(record)
+        if emails:
+            return False
+
+    if structured_query.phone_required is True:
+        phones = extract_contact_numbers(record)
+        if not phones:
+            return False
+    elif structured_query.phone_required is False:
+        phones = extract_contact_numbers(record)
+        if phones:
+            return False
+
+    if structured_query.linkedin_required is True:
+        linkedin = extract_linkedin(record)
+        if not linkedin:
+            return False
+    elif structured_query.linkedin_required is False:
+        linkedin = extract_linkedin(record)
+        if linkedin:
             return False
 
     return True

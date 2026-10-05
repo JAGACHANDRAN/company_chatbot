@@ -9,7 +9,7 @@ from ..search import ALLOWED_SEARCH_FIELDS
 
 from unittest.mock import MagicMock
 from ..utils.normalization import extract_original_source_fields
-from ..services.retrieval_service import group_records_by_source, execute_hybrid_retrieval
+from ..services.retrieval_service import group_records_by_source, execute_hybrid_retrieval, validate_record_relevance
 from ..services.query_understanding import parse_query_understanding, fallback_query_understanding
 from ..services.query_router import route_query
 from ..services.response_generator import is_valid_source_row, generate_final_answer
@@ -100,10 +100,8 @@ def format_api_sources_and_records(final_records: List[dict]):
 
 async def execute_deterministic_search(raw_query: str, dataset_id: Optional[str] = None) -> ChatResponse:
     """
-    Executes contact_search.py deterministic search pipeline:
-    parse_query -> search -> result -> format_markdown.
-    Adheres strictly to PRIVACY_MODE: no vector search, no LLM in retrieval.
-    Zero logging of query text or record cell values.
+    Executes unified Hybrid Search pipeline (Query Understanding -> Router -> Mongo + Vector Search -> Dedup -> Reranker -> Strict Answer).
+    Preserves existing keyword search and privacy guards (zero database records sent to external LLMs).
     """
     # Backwards compatibility guard: if a test explicitly mocked execute_hybrid_retrieval
     if hasattr(execute_hybrid_retrieval, "mock_calls") or "Mock" in type(execute_hybrid_retrieval).__name__:
@@ -136,92 +134,89 @@ async def execute_deterministic_search(raw_query: str, dataset_id: Optional[str]
     except Exception:
         pass
 
-    # Resolve target collections & filters based on dataset selector
-    target_collections = all_target_cols
-    extra_filter = None
+    # Resolve target collections & dataset display name
+    target_dataset_id = dataset_id if dataset_id and dataset_id not in ("all", "default", "*", "companies") else "all"
     display_dataset_name = "All Datasets"
-
-    if dataset_id and dataset_id not in ("all", "default", "*", "companies"):
-        # Check if dataset_id corresponds to a specific uploaded dataset
-        single_ds = get_dataset(dataset_id)
+    if target_dataset_id != "all":
+        single_ds = get_dataset(target_dataset_id)
         if single_ds:
-            target_collections = ["dataset_records"]
-            extra_filter = {"dataset_id": dataset_id}
-            display_dataset_name = single_ds.get("filename", dataset_id)
-        elif dataset_id in db.list_collection_names() or dataset_id in configured_cols:
-            target_collections = [dataset_id]
-            display_dataset_name = dataset_id
+            display_dataset_name = single_ds.get("filename", target_dataset_id)
+        else:
+            display_dataset_name = target_dataset_id
 
-    # 1. Obtain vocabulary
-    vocab = get_or_build_vocab(db, all_target_cols)
+    # 1. Query Understanding
+    try:
+        structured_query, was_llm = await parse_query_understanding(raw_query)
+    except Exception:
+        structured_query = fallback_query_understanding(raw_query)
 
-    # 2. Parse query deterministically
-    parsed = parse_query(raw_query, vocab)
+    # 2. Query Routing (SearchPlan: structured vs vector vs hybrid)
+    plan = route_query(structured_query)
 
-    # 3. Retrieve contacts
-    result = contact_search_exec(
-        db=db,
-        collections=target_collections,
-        parsed=parsed,
-        vocab=vocab,
-        limit=500,
-        extra_filter=extra_filter
-    )
+    # 3. Hybrid Retrieval (Structured MongoDB search + MongoDB Atlas / Local Vector search)
+    try:
+        final_records, debug_info = await execute_hybrid_retrieval(
+            structured_query=structured_query,
+            plan=plan,
+            dataset_id=target_dataset_id,
+            limit=50
+        )
+    except Exception as e:
+        final_records, debug_info = [], {}
 
-    # 4. Generate answer markdown
-    # When PRIVACY_MODE is true: ALWAYS use format_markdown(result)
-    # If LLM is allowed (PRIVACY_MODE=False), it may only reword the text built from the result
-    final_markdown = format_markdown(result)
-    if not PRIVACY_MODE:
+    # 4. Complementary fallback to contact_search vocab engine if no records matched
+    if not final_records:
         try:
-            from ..llm import call_llm
-            reword_prompt = (
-                "You are an assistant. Reword the following contact search summary clearly for the user. "
-                "CRITICAL: Do NOT invent, add, alter, or remove any names, phone numbers, emails, or company details. "
-                "Keep all facts and contact details exact.\n\n"
-                f"{final_markdown}"
+            vocab = get_or_build_vocab(db, all_target_cols)
+            parsed = parse_query(raw_query, vocab)
+            extra_filter = {"dataset_id": target_dataset_id} if target_dataset_id != "all" else None
+            contact_res = contact_search_exec(
+                db=db,
+                collections=all_target_cols,
+                parsed=parsed,
+                vocab=vocab,
+                limit=50,
+                extra_filter=extra_filter
             )
-            llm_text = await call_llm(reword_prompt)
-            if llm_text and llm_text.strip():
-                final_markdown = llm_text.strip()
+            for g in contact_res.get("groups", []):
+                for rec in g.get("records", []):
+                    rec_copy = dict(rec)
+                    rec_copy["source_collection"] = rec.get("_collection", "default")
+                    if validate_record_relevance(rec_copy, structured_query):
+                        final_records.append(rec_copy)
         except Exception:
-            # Fall back to deterministic markdown
-            final_markdown = format_markdown(result)
+            pass
 
-    # Flatten records from groups for backwards compatibility with legacy UI cards
-    all_flat_records = []
-    for g in result.get("groups", []):
-        for rec in g.get("records", []):
-            rec_copy = dict(rec)
-            rec_copy["source_collection"] = rec.get("_collection", "default")
-            all_flat_records.append(rec_copy)
+    # Strict Relevance Guard: filter final_records to ensure 100% adherence to constraints
+    if final_records and structured_query:
+        final_records = [r for r in final_records if validate_record_relevance(r, structured_query)]
 
-    formatted_sources = []
-    display_records = []
-    top_dataset = target_collections[0] if target_collections else "default"
-    top_db = get_database_name()
+    # 5. Generate final strictly-formatted answer
+    final_markdown = await generate_final_answer(raw_query, structured_query, final_records)
 
-    if all_flat_records:
-        formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(all_flat_records)
+    # 6. Format API sources and display records
+    formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(final_records)
+    found = len(final_records) > 0
 
-    found = result.get("total", 0) > 0
+    # If the synthesized answer is a no-data message, clear final_records for API consistency
+    if final_markdown.startswith("No data available for ") or final_markdown == "No data found":
+        display_records = []
+        formatted_sources = []
+        found = False
+
     return ChatResponse(
         success=True,
         found=found,
-        count=result.get("total", 0),
+        count=len(display_records) if not found else len(final_records),
         dataset_id=dataset_id or "all",
         dataset_name=display_dataset_name,
         database=top_db,
         dataset=top_dataset,
         sources=formatted_sources,
         data=display_records,
-        message=final_markdown if (found or final_markdown) else "No data found",
-        understood_as=result.get("understood_as", []),
-        groups=result.get("groups", []),
-        not_found=result.get("not_found", []),
-        suggestions=result.get("suggestions", {}),
-        notes=result.get("notes", []),
-        total=result.get("total", 0)
+        message=final_markdown if (found or final_markdown) else "No matching records found.",
+        understood_as=[f"Strategy: {plan.search_strategy}", f"Intent: {structured_query.intent}"],
+        total=len(display_records) if not found else len(final_records)
     )
 
 

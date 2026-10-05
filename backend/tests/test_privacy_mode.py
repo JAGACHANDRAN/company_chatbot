@@ -183,15 +183,14 @@ def test_query_router_disables_vector_search_in_privacy_mode():
 
 
 @pytest.mark.anyio
-async def test_vector_search_skips_in_privacy_mode():
+async def test_vector_search_in_privacy_mode_zero_external_calls():
     """
-    Test Requirement 4:
-    In vector_search.py: execute_vector_search returns empty list and skips external HTTP calls.
+    Verify that vector search and embedding generation run 100% locally in PRIVACY_MODE with zero external HTTP calls.
     """
     with patch("httpx.AsyncClient.post") as mock_post:
         results = await execute_vector_search("Who is responsible for quality?", limit=10)
-        assert results == []
-        # No external HTTP calls should have been made
+        assert isinstance(results, list)
+        # No external HTTP calls should have been made to external LLMs
         assert mock_post.call_count == 0
 
     with patch("httpx.AsyncClient.post") as mock_post:

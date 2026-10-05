@@ -75,13 +75,18 @@ def save_dataset(
 
     # 2. Insert records in chunks of 1000
     if normalized_records:
+        from .vector_search import build_record_search_text, generate_local_embedding
         docs_to_insert = []
         for rec in normalized_records:
+            search_text = build_record_search_text(rec)
+            embedding = generate_local_embedding(search_text)
             doc = {
                 "dataset_id": dataset_id,
                 "record_index": rec["record_index"],
                 "data": rec["data"],
-                "normalized_data": rec["normalized_data"]
+                "normalized_data": rec["normalized_data"],
+                "search_text": search_text,
+                "embedding": embedding
             }
             docs_to_insert.append(doc)
 
