@@ -1,9 +1,18 @@
-import json
+"""
+Hybrid Retrieval Service.
+Executes vector search ($vectorSearch) and structured MongoDB search in parallel,
+merges results using Reciprocal Rank Fusion (k=60), and returns all matching and similar records.
+"""
+import time
+import asyncio
+import logging
 from typing import List, Dict, Any, Optional, Tuple
+
 from .query_understanding import StructuredQuery
 from .query_router import SearchPlan, route_query
 from .mongo_search import execute_structured_search
 from .vector_search import execute_vector_search
+from .reranker import reciprocal_rank_fusion
 from ..utils.deduplication import deduplicate_records
 from ..utils.normalization import (
     is_company_match,
@@ -11,8 +20,9 @@ from ..utils.normalization import (
     normalize_location_string,
     normalize_text,
 )
-from .reranker import rerank_records
-from .response_generator import extract_emails, extract_contact_numbers, extract_linkedin
+from ..config import RETRIEVE_K, FINAL_K, RRF_K
+
+logger = logging.getLogger("calispec.retrieval")
 
 
 def validate_record_relevance(
@@ -21,20 +31,25 @@ def validate_record_relevance(
     plan: Optional[SearchPlan] = None
 ) -> bool:
     """
-    RESULT RELEVANCE GUARD:
-    Guarantees that records meet hard user constraints before proceeding.
-    1. Explicit company query: record must match requested company (is_company_match).
-       Rejects unrelated companies (e.g. ACCUMEN AUTOMATION for 2D INC).
-    2. Explicit person query: record must match requested person (is_person_match).
-    3. Location constraint: record must belong to requested state/city (hard filter).
-    4. Designation / Role constraint.
-    5. Availability filters (email_required, phone_required, linkedin_required).
+    Guarantees that retrieved records satisfy explicit user constraints:
+    - Target company match if explicit company requested (strict rejection of non-matching companies).
+    - Target person match if explicit person requested.
+    - Target location match if explicit city/state requested.
+    - Availability filters (email_required, phone_required).
+    - Missing filters (missing_filter).
     """
-    raw = record.get("raw_data") or {}
+    from .response_generator import (
+        extract_company_name,
+        extract_person_info,
+        extract_emails,
+        extract_contact_numbers,
+        extract_linkedin,
+        extract_location
+    )
 
-    # 1. Company constraint (Hard filter for exact and multi-entity queries)
+    # 1. Company constraint (STRICT: Never return non-matching companies when company is specified)
     if structured_query.companies:
-        rec_comp = record.get("company_name") or raw.get("Company Name") or raw.get("company_name") or ""
+        rec_comp = extract_company_name(record)
         matched = False
         for target_comp in structured_query.companies:
             if is_company_match(target_comp, rec_comp):
@@ -43,167 +58,78 @@ def validate_record_relevance(
         if not matched:
             return False
 
-    # 2. Person constraint (Hard filter for person search)
+    # 1b. Person constraint
     if structured_query.people:
-        rec_person = (
-            record.get("person_name")
-            or raw.get("Contact Person")
-            or raw.get("Person Name")
-            or raw.get("name")
-            or ""
-        )
-        matched = False
-        for target_person in structured_query.people:
-            if is_person_match(target_person, rec_person):
-                matched = True
+        rec_person = extract_person_info(record).get("name") or ""
+        matched_p = False
+        for target_p in structured_query.people:
+            if is_person_match(target_p, rec_person):
+                matched_p = True
                 break
-        if not matched:
+        if not matched_p:
             return False
 
-    # 3. Location constraint (Hard filter)
-    if structured_query.state:
-        target_state = normalize_location_string(structured_query.state)
-        rec_state = normalize_location_string(record.get("state"))
-        rec_loc = normalize_location_string(record.get("location"))
-        rec_addr = normalize_location_string(record.get("address") or raw.get("Address") or raw.get("address") or "")
-        raw_state = normalize_location_string(raw.get("State") or raw.get("state") or "")
-
-        state_match = (
-            target_state in rec_state
-            or target_state in rec_loc
-            or target_state in rec_addr
-            or target_state in raw_state
-        )
-        if not state_match:
-            return False
-
+    # 2. Location constraint
     if structured_query.city:
         target_city = normalize_location_string(structured_query.city)
-        rec_city = normalize_location_string(record.get("city"))
-        rec_loc = normalize_location_string(record.get("location"))
-        rec_addr = normalize_location_string(raw.get("Address", ""))
-        raw_city = normalize_location_string(raw.get("City", ""))
-        city_match = (
-            target_city in rec_city
-            or target_city in rec_loc
-            or target_city in rec_addr
-            or target_city in raw_city
-        )
-        if not city_match:
+        rec_loc = extract_location(record)
+        rec_city = normalize_location_string(rec_loc.get("city") or "")
+        if rec_city and target_city not in rec_city:
             return False
 
-    # 4. Designation constraint
-    if structured_query.designation:
-        target_desig = normalize_text(structured_query.designation)
-        rec_desig = normalize_text(record.get("designation") or raw.get("Designation") or raw.get("designation") or "")
-        rec_role = normalize_text(record.get("role") or raw.get("Role") or raw.get("role") or "")
-        if target_desig not in rec_desig and target_desig not in rec_role:
-            # Check for core tokens match (e.g., 'quality' and 'manager')
-            desig_tokens = [t for t in target_desig.split() if len(t) > 2]
-            combined_desig = f"{rec_desig} {rec_role}"
-            if not all(token in combined_desig for token in desig_tokens):
-                return False
-
-    # 5. Department / Hybrid filter
-    if structured_query.department and not structured_query.designation and (plan is None or plan.search_strategy == "hybrid"):
-        target_dept = normalize_text(structured_query.department)
-        rec_dept = normalize_text(record.get("department"))
-        rec_desig = normalize_text(record.get("designation"))
-        raw_desig = normalize_text(raw.get("Designation", ""))
-        if target_dept not in rec_dept and target_dept not in rec_desig and target_dept not in raw_desig:
-            return False
-
-    # 6. Availability filters
+    # 3. Contact availability
     if structured_query.email_required is True:
-        emails = extract_emails(record)
-        if not emails:
-            return False
-    elif structured_query.email_required is False:
-        emails = extract_emails(record)
-        if emails:
+        if not extract_emails(record):
             return False
 
     if structured_query.phone_required is True:
-        phones = extract_contact_numbers(record)
-        if not phones:
-            return False
-    elif structured_query.phone_required is False:
-        phones = extract_contact_numbers(record)
-        if phones:
+        if not extract_contact_numbers(record):
             return False
 
     if structured_query.linkedin_required is True:
-        linkedin = extract_linkedin(record)
-        if not linkedin:
+        if not extract_linkedin(record):
             return False
-    elif structured_query.linkedin_required is False:
-        linkedin = extract_linkedin(record)
-        if linkedin:
-            return False
+
+    # 4. Missing field filters
+    if structured_query.missing_filter == "email" and extract_emails(record):
+        return False
+    elif structured_query.missing_filter == "phone" and extract_contact_numbers(record):
+        return False
+    elif structured_query.missing_filter == "linkedin" and extract_linkedin(record):
+        return False
 
     return True
 
 
 def group_records_by_source(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Groups retrieved records by source dataset/file/collection.
-    Preserves original source fields without forcing into a single schema.
-    Deduplicates only truly identical records within the same source.
-    Returns:
-    [
-        {
-            "database_source": "MongoDB Atlas",
-            "source_collection": "metrology",
-            "source_file": "metrology_5000.xlsx",
-            "source_sheet": "Sheet1",  # or None
-            "records": [...]
-        },
-        ...
-    ]
-    """
-    from ..database import get_database_name
-    default_db_name = get_database_name()
-    groups_dict: Dict[Tuple[str, str, Optional[str], Optional[str]], Dict[str, Any]] = {}
+    """Groups retrieved records by source file or dataset while preserving original columns."""
+    groups_dict: Dict[Tuple[str, Optional[str], Optional[str]], Dict[str, Any]] = {}
 
     for r in records:
-        db_src = r.get("database_source") or r.get("database") or default_db_name
-        col = r.get("source_collection") or "default"
-        # Only preserve genuine source file from an actual column or upload
-        raw_s_file = r.get("source_file")
-        if raw_s_file:
-            s_clean = str(raw_s_file).strip()
-            if s_clean.lower() in ("mongodb", "mongodb atlas", "dataset_records", "none", "not available", "null") or s_clean.startswith("MongoDB:"):
-                f_name = None
-            else:
-                f_name = s_clean
-        else:
-            f_name = None
+        s_file = r.get("source_file") or r.get("Source File") or r.get("Sources") or None
+        s_sheet = r.get("sheet_name") or r.get("Source Sheet") or None
+        d_name = r.get("dataset_name") or r.get("dataset_id") or r.get("source_collection") or "dataset_records"
+        s_col = r.get("source_collection") or "dataset_records"
+        key = (str(s_file), str(s_sheet), str(d_name))
 
-        sheet = r.get("source_sheet")
-
-        group_key = (str(db_src), str(col), f_name, str(sheet) if sheet else None)
-        if group_key not in groups_dict:
-            groups_dict[group_key] = {
-                "database_source": db_src,
-                "source_collection": col,
-                "source_file": f_name,
-                "source_sheet": sheet,
+        if key not in groups_dict:
+            groups_dict[key] = {
+                "source_file": s_file,
+                "source_sheet": s_sheet,
+                "dataset_name": d_name,
+                "source_collection": s_col,
                 "records": [],
-                "_seen_record_keys": set(),
+                "_seen": set()
             }
 
-        raw = r.get("raw_data") or {}
-        raw_fingerprint = tuple(sorted((str(k), str(v)) for k, v in raw.items() if v not in (None, "", "Not Available")))
-        if not raw_fingerprint:
-            raw_fingerprint = (str(r.get("id")), str(r.get("company_name")), str(r.get("person_name")))
-
-        if raw_fingerprint not in groups_dict[group_key]["_seen_record_keys"]:
-            groups_dict[group_key]["_seen_record_keys"].add(raw_fingerprint)
-            groups_dict[group_key]["records"].append(r)
+        rec_id = str(r.get("_id") or f"{r.get('company')}::{r.get('person')}")
+        if rec_id not in groups_dict[key]["_seen"]:
+            groups_dict[key]["_seen"].add(rec_id)
+            groups_dict[key]["records"].append(r)
 
     result = []
     for g in groups_dict.values():
-        del g["_seen_record_keys"]
+        del g["_seen"]
         if g["records"]:
             result.append(g)
     return result
@@ -213,132 +139,69 @@ async def execute_hybrid_retrieval(
     structured_query: StructuredQuery,
     plan: Optional[SearchPlan] = None,
     dataset_id: Optional[str] = "all",
-    limit: int = 50
+    limit: int = FINAL_K
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Executes end-to-end Hybrid Retrieval:
-    1. Executes structured MongoDB search (if indicated by SearchPlan).
-    2. Executes vector/semantic search (ONLY if indicated by SearchPlan).
-    3. Merges results with STRICT RELEVANCE VALIDATION GUARD.
-       Never permits unrelated records from vector similarity when an exact entity is queried.
-    4. Deduplicates identical records while strictly PRESERVING source separation.
-    5. Applies optional reranking.
-    6. Groups records by source dataset/file/collection.
-    
-    Returns:
-    (final_records: List[Dict[str, Any]], debug_info: Dict[str, Any])
+    Executes Multi-Stage Hybrid Retrieval:
+    1. Runs parallel 5-stage keyword search (Stages A to E) + nomic-embed-text Atlas Vector Search.
+    2. Merges with Weighted Reciprocal Rank Fusion (k=60).
+    3. Validates relevance constraints (company, person, location, availability).
+    4. Provides 'Did you mean: ...?' suggestions on 0 matches.
     """
+    t_start = time.time()
     if plan is None:
         plan = route_query(structured_query)
 
     user_query = structured_query.original_query
-    exact_results: List[Dict[str, Any]] = []
-    vector_results: List[Dict[str, Any]] = []
+    from .multi_stage_search import execute_multi_stage_retrieval
 
-    # 1. Structured Search
-    if plan.use_structured:
-        try:
-            exact_results = execute_structured_search(
-                structured_query=structured_query,
-                dataset_id=dataset_id,
-                limit=limit
-            )
-        except Exception as e:
-            print(f"[Retrieval Service Warning - Structured Search] {e}")
-            exact_results = []
-
-    # 2. Vector / Semantic Search (ONLY when plan indicates use_vector)
-    # "For explicit exact company queries, vector search should NOT introduce unrelated records."
-    # "Vector similarity must NEVER override an explicit exact filter."
-    if plan.use_vector:
-        vector_query = plan.semantic_query or user_query
-        try:
-            raw_vector_results = await execute_vector_search(
-                query_text=vector_query,
-                dataset_id=dataset_id,
-                limit=limit
-            )
-            # Filter vector results with hard constraints
-            vector_results = [
-                r for r in raw_vector_results
-                if validate_record_relevance(r, structured_query, plan)
-            ]
-        except Exception as e:
-            print(f"[Retrieval Service Warning - Vector Search] {e}")
-            vector_results = []
-
-    # 3. Result Merging & Relevance Guard
-    # Structured results take priority
-    candidate_records: List[Dict[str, Any]] = []
-    seen_ids = set()
-
-    for r in exact_results:
-        if validate_record_relevance(r, structured_query, plan):
-            rid = f"{r.get('source_file')}::{r.get('id')}::{r.get('company_name')}::{r.get('person_name')}"
-            if rid not in seen_ids:
-                seen_ids.add(rid)
-                candidate_records.append(r)
-
-    for r in vector_results:
-        if validate_record_relevance(r, structured_query, plan):
-            rid = f"{r.get('source_file')}::{r.get('id')}::{r.get('company_name')}::{r.get('person_name')}"
-            if rid not in seen_ids:
-                seen_ids.add(rid)
-                candidate_records.append(r)
-
-    # 4. Deduplication: deduplicate identical records within the same source, preserving source separation
-    deduped_results = deduplicate_records(candidate_records, preserve_source_separation=True)
-
-    # 5. Reranking & Top-K Truncation
-    final_results = rerank_records(
-        records=deduped_results,
-        structured_query=structured_query,
-        original_query=user_query,
-        top_k=limit
+    # Execute Multi-Stage Retrieval
+    multi_res = await execute_multi_stage_retrieval(
+        raw_query=user_query,
+        target_dataset=dataset_id or "all",
+        city_filter=structured_query.city
     )
 
-    # 6. Source Grouping (Critical Requirement 2)
-    source_groups = group_records_by_source(final_results)
+    retrieved_raw = multi_res.get("records", [])
 
-    # 7. Structured Logging
-    filters_used = {
-        k: v for k, v in {
-            "companies": structured_query.companies,
-            "people": structured_query.people,
-            "designation": structured_query.designation,
-            "department": structured_query.department,
-            "state": structured_query.state,
-            "city": structured_query.city,
-            "country": structured_query.country,
-            "location": structured_query.location,
-        }.items() if v
-    }
+    # Filter with relevance validation
+    valid_records = [r for r in retrieved_raw if validate_record_relevance(r, structured_query, plan)]
+
+    # If structured query has specific people or non-company constraints that multi_stage didn't capture,
+    # fallback to structured search if valid_records is empty
+    if not valid_records and (structured_query.people or structured_query.is_only_fields):
+        try:
+            struct_results = execute_structured_search(
+                structured_query=structured_query,
+                dataset_id=dataset_id,
+                limit=max(RETRIEVE_K, limit)
+            )
+            for r in struct_results:
+                if validate_record_relevance(r, structured_query, plan):
+                    valid_records.append(r)
+        except Exception as e:
+            logger.warning(f"[Hybrid Retrieval] Structured fallback error: {e}")
+
+    # Deduplicate and format records
+    final_records = deduplicate_records(valid_records, preserve_source_separation=True)[:limit]
+    source_groups = group_records_by_source(final_records)
+
+    elapsed_ms = round((time.time() - t_start) * 1000, 2)
+    logger.info(
+        f"[Hybrid Retrieval] Strategy: {plan.search_strategy} | Stages: {multi_res.get('stages')} | "
+        f"Retrieved: {len(final_records)} | Latency: {elapsed_ms}ms"
+    )
 
     debug_info = {
-        "user_query": user_query,
-        "structured_query": structured_query.model_dump(),
-        "search_type": plan.search_strategy,
-        "filters_used": filters_used,
-        "number_of_exact_results": len(exact_results),
-        "number_of_vector_results": len(vector_results),
-        "number_after_merging": len(candidate_records),
-        "number_after_deduplication": len(deduped_results),
-        "final_result_count": len(final_results),
-        "sources": source_groups,
-        "source_groups": source_groups,
+        "search_strategy": plan.search_strategy,
+        "stages": multi_res.get("stages", {}),
+        "keyword_hits": multi_res.get("keyword_hits", 0),
+        "vector_hits": multi_res.get("vector_hits", 0),
+        "fallback_used": multi_res.get("fallback_used", False),
+        "final_count": len(final_records),
+        "suggestions": multi_res.get("suggestions", []),
+        "latency_ms": elapsed_ms,
+        "source_groups": source_groups
     }
 
-    # Console logging formatted cleanly and safely without exposing raw queries or records
-    print("=" * 60)
-    print(f"QUERY: [REDACTED FOR PRIVACY - {len(user_query)} chars]")
-    print(f"INTENT: {structured_query.intent}")
-    print(f"SEARCH TYPE: {plan.search_strategy}")
-    print(f"EXACT RESULTS: {len(exact_results)}")
-    print(f"VECTOR RESULTS: {len(vector_results)}")
-    print(f"MERGED: {len(candidate_records)}")
-    print(f"DEDUPLICATED: {len(deduped_results)}")
-    print(f"FINAL: {len(final_results)}")
-    print(f"SOURCE GROUPS: {len(source_groups)}")
-    print("=" * 60)
-
-    return final_results, debug_info
+    return final_records, debug_info

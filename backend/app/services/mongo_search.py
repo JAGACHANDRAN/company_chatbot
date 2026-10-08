@@ -51,7 +51,8 @@ def build_company_clauses(
 ) -> List[Dict[str, Any]]:
     """
     Builds MongoDB query clauses matching a company name across standard fields.
-    Supports partial entity matching (e.g. 'ABC Industries' matches 'ABC Industries Pvt Ltd').
+    Supports partial entity matching (e.g. 'TVS' matches 'Delphi TVS', 'Lucas TVS').
+    Always queries top-level fields (company, norm_company) as well as nested fields.
     """
     variants = normalize_company_search_variants(company_name)
     clauses = []
@@ -61,13 +62,25 @@ def build_company_clauses(
     ]
 
     for v in variants:
-        reg = build_regex_clause(v, exact=False)
+        clean_v = sanitize_value(v)
+        if not clean_v:
+            continue
+        reg_compiled = re.compile(re.escape(clean_v), re.I)
+        reg_dict = build_regex_clause(clean_v, exact=False)
+
+        # 1. Always check top-level company and norm_company fields
+        clauses.append({"company": reg_compiled})
+        clauses.append({"norm_company": reg_compiled})
+        clauses.append({"company": reg_dict})
+        clauses.append({"norm_company": reg_dict})
+
+        # 2. Check general standard fields and nested data
         for f in fields_to_check:
+            clauses.append({f: reg_compiled})
             if prefix_data:
-                clauses.append({f"data.{f}": reg})
-                clauses.append({f"normalized_data.{re.sub(r'[^a-zA-Z0-9_]', '_', f.lower())}": reg})
-            else:
-                clauses.append({f: reg})
+                clauses.append({f"data.{f}": reg_compiled})
+                clauses.append({f"normalized_data.{re.sub(r'[^a-zA-Z0-9_]', '_', f.lower())}": reg_compiled})
+                clauses.append({f"data.{f}": reg_dict})
 
     return clauses
 
@@ -78,13 +91,19 @@ def build_person_clauses(
 ) -> List[Dict[str, Any]]:
     """
     Builds clauses matching a person name across standard fields.
+    Always includes top-level person fields.
     """
     reg = build_regex_clause(person_name, exact=False)
+    reg_compiled = re.compile(re.escape(person_name), re.I)
     fields_to_check = [
         "Person Name", "person_name", "Contact Person", "contact_person", "person", "name", "Name", "Full Name", "Employee Name"
     ]
-    clauses = []
+    clauses = [
+        {"person": reg_compiled},
+        {"person": reg}
+    ]
     for f in fields_to_check:
+        clauses.append({f: reg_compiled})
         if prefix_data:
             clauses.append({f"data.{f}": reg})
             clauses.append({f"normalized_data.{re.sub(r'[^a-zA-Z0-9_]', '_', f.lower())}": reg})
@@ -245,6 +264,31 @@ def build_structured_mongo_filter(
     # Optional dataset scoping
     if is_dataset_records and dataset_id and dataset_id not in ("all", "default", "*", "companies"):
         and_conditions.append({"dataset_id": dataset_id})
+
+    # Phone number exact / suffix lookup
+    orig_text = structured_query.original_query or ""
+    phone_match = re.search(r"(\+?\d[\d\s-]{6,15}\d)", orig_text)
+    if phone_match and not structured_query.companies and not structured_query.people:
+        p_clean = re.sub(r"[^\d+]", "", phone_match.group(0))
+        p_sub = p_clean[-10:] if len(p_clean) >= 10 else p_clean
+        p_reg = {"$regex": re.escape(p_sub)}
+        p_clauses = [
+            {"phone": p_reg}, {"phone_2": p_reg}, {"mobile_no": p_reg},
+            {"data.Contact Number": p_reg}, {"data.Mobile No.": p_reg},
+            {"data.phone": p_reg}, {"data.phone_2": p_reg}, {"search_text": p_reg}
+        ]
+        and_conditions.append({"$or": p_clauses})
+
+    # Email exact lookup
+    email_match = re.search(r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)", orig_text)
+    if email_match and not structured_query.companies and not structured_query.people:
+        e_val = email_match.group(0).strip()
+        e_reg = {"$regex": re.escape(e_val), "$options": "i"}
+        e_clauses = [
+            {"email": e_reg}, {"email_2": e_reg},
+            {"data.Email": e_reg}, {"data.Email 1": e_reg}, {"data.Email 2": e_reg}, {"search_text": e_reg}
+        ]
+        and_conditions.append({"$or": e_clauses})
 
     # 1. Multiple Companies -> IN clause ($or over company variants)
     if structured_query.companies:

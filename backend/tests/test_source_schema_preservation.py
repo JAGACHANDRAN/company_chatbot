@@ -63,7 +63,7 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         # Source displayed at top
         self.assertNotIn("Dataset:", ans)
         self.assertNotIn("Database:", ans)
-        self.assertIn("Source File: Company Leadership Database - Sheet1.csv", ans)
+        self.assertIn("Source File: Company Leadership Database - Sheet1", ans)
         self.assertIn("Company Name: TVS Motor Company", ans)
         self.assertIn("Contact Person 1:", ans)
         self.assertIn("Name: Shreethan Srinivasaiah Shetty", ans)
@@ -122,9 +122,10 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         self.assertNotIn("Dataset:", ans)
         self.assertNotIn("Database:", ans)
 
-        # Preserves each source file association
-        self.assertIn("Source File: File A.csv", ans)
-        self.assertIn("Source File: File B.csv", ans)
+        # Preserves clean source file association
+        self.assertIn("Source File: File A, File B", ans)
+        self.assertIn("- Source: File A", ans)
+        self.assertIn("- Source: File B", ans)
         self.assertIn("Company Name: TVS", ans)
         self.assertIn("Contact Person 1:", ans)
         self.assertIn("Name: Ravi", ans)
@@ -158,7 +159,8 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         sq = fallback_query_understanding("Acme Corp")
         ans = generate_deterministic_answer("Acme Corp", sq, [rec])
 
-        self.assertIn("Source File: customers.csv", ans)
+        self.assertIn("Source File: customers", ans)
+
         self.assertIn("Company Name: Acme Corp", ans)
         self.assertIn("Contact Person 1:", ans)
         self.assertIn("Name: Alice", ans)

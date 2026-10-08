@@ -4,7 +4,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import pandas as pd
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from ..schemas import (
     DatasetUploadResponse,
@@ -16,6 +16,7 @@ from ..schemas import (
     DatasetConfirmResponse,
     ChangesPageResponse
 )
+from ..services.embeddings import embed_dataset_records_background
 from ..services.file_parser import parse_uploaded_file, inspect_excel_sheets, detect_file_extension
 from ..services.schema_detector import build_schema_metadata, normalize_records
 from ..services.mongo_dataset import (
@@ -30,6 +31,8 @@ from ..services.auth import require_role, ROLE_DATA_UPLOADER
 from ..services import data_cleaner
 from ..services.contact_search import invalidate_vocab
 from ..services.preview_cache import store_preview, get_preview, delete_preview
+from ..services.source_resolver import refresh_dataset_map
+from ..services.multi_stage_search import refresh_company_name_cache
 
 # Role guards
 require_uploader = require_role(ROLE_DATA_UPLOADER, "You do not have permission to upload files.")
@@ -254,6 +257,7 @@ async def download_preview_report(
 @router.post("/upload/confirm", response_model=DatasetConfirmResponse, dependencies=[Depends(require_uploader)])
 async def confirm_upload(
     body: DatasetConfirmRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_uploader)
 ):
     """
@@ -334,18 +338,25 @@ async def confirm_upload(
         # Free preview from memory
         delete_preview(body.preview_id)
 
-        # Invalidate cached vocabulary
+        # Invalidate cached vocabulary and refresh dataset map
         invalidate_vocab()
+        refresh_dataset_map()
+        refresh_company_name_cache()
+
+        dataset_id = save_res.get("dataset_id")
+        inserted_count = save_res.get("inserted", 0)
+        if dataset_id and inserted_count > 0:
+            background_tasks.add_task(embed_dataset_records_background, dataset_id, 32)
 
         return DatasetConfirmResponse(
             success=True,
-            dataset_id=save_res.get("dataset_id"),
+            dataset_id=dataset_id,
             dataset_name=save_res.get("dataset_name"),
             filename=save_res.get("filename"),
-            inserted=save_res.get("inserted", 0),
+            inserted=inserted_count,
             skipped=save_res.get("skipped", 0),
             total_records=save_res.get("total_records", 0),
-            message=save_res.get("message", "Dataset successfully cleaned and saved to MongoDB.")
+            message=f"{inserted_count:,} records uploaded, embedding in progress."
         )
     except Exception as e:
         print(f"[Confirm Upload Error] {e}")
@@ -368,6 +379,7 @@ async def cancel_upload(
 
 @router.post("/upload", response_model=DatasetUploadResponse, dependencies=[Depends(require_uploader)])
 async def upload_dataset_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     sheet_name: Optional[str] = Form(None),
     current_user: dict = Depends(require_uploader)
@@ -407,6 +419,11 @@ async def upload_dataset_file(
         )
         invalidate_vocab()
 
+        dataset_id = saved.get("dataset_id")
+        inserted_count = saved.get("inserted", 0)
+        if dataset_id and inserted_count > 0:
+            background_tasks.add_task(embed_dataset_records_background, dataset_id, 32)
+
         sample_preview = [
             {
                 "Company Name": r.get("company", ""),
@@ -420,15 +437,15 @@ async def upload_dataset_file(
 
         return DatasetUploadResponse(
             success=True,
-            dataset_id=saved["dataset_id"],
+            dataset_id=dataset_id,
             filename=saved["filename"],
             original_type=ext.lstrip("."),
             sheet_name=sheet_name,
-            record_count=saved["inserted"],
+            record_count=inserted_count,
             fields=list(data_cleaner.STANDARD_ORDER),
             normalized_fields=list(data_cleaner.STANDARD_ORDER),
             sample_records=sample_preview,
-            message=f"Dataset '{filename}' ({saved['inserted']:,} cleaned records saved) ready for AI search."
+            message=f"{inserted_count:,} records uploaded, embedding in progress."
         )
 
     except ValueError as ve:
@@ -442,6 +459,7 @@ async def upload_dataset_file(
 
 @alias_router.post("/upload", response_model=DatasetUploadResponse, dependencies=[Depends(require_uploader)])
 async def direct_upload_alias(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     sheet_name: Optional[str] = Form(None),
     current_user: dict = Depends(require_uploader)
@@ -450,7 +468,7 @@ async def direct_upload_alias(
     Direct alias endpoint at /api/upload.
     Enforces identical strict DATA_UPLOADER check and authorization flow.
     """
-    return await upload_dataset_file(file=file, sheet_name=sheet_name, current_user=current_user)
+    return await upload_dataset_file(background_tasks=background_tasks, file=file, sheet_name=sheet_name, current_user=current_user)
 
 
 @router.get("", response_model=DatasetListResponse)
@@ -496,6 +514,8 @@ def delete_dataset_endpoint(
     if not success:
         raise HTTPException(status_code=404, detail="Dataset not found or could not be deleted.")
     invalidate_vocab()
+    refresh_dataset_map()
+    refresh_company_name_cache()
     return {
         "success": True,
         "dataset_id": dataset_id,

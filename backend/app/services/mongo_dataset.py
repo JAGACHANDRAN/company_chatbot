@@ -263,6 +263,7 @@ def save_cleaned_dataset(
             "review_reasons": str(row.get("review_reasons", "")),
             "uploaded_at": uploaded_at,
             "search_text": search_text,
+            "embedding_status": "pending",
         }
 
         # Any extra columns from row

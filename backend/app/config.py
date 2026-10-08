@@ -9,25 +9,36 @@ load_dotenv()
 logger = logging.getLogger("calispec.privacy")
 
 # ==============================================================================
-# Central PRIVACY_MODE Setting
-# When True:
-# - External LLM calls are strictly blocked (llm.py raises RuntimeError).
-# - Vector/embedding search is skipped; regex and text-index search are used.
-# - Response synthesizer runs in 100% deterministic mode without calling llm.py.
-# - Logs never contain full user queries or raw database records.
+# Hybrid RAG Settings
+# - Local Embeddings: nomic-embed-text via local Ollama (http://localhost:11434)
+# - Cloud LLM: gpt-oss:120b on Ollama Cloud with automatic PII masking
+# - Exact lookups: Direct from MongoDB without LLM call
 # ==============================================================================
-PRIVACY_MODE_RAW = os.getenv("PRIVACY_MODE", "true").strip().lower()
-PRIVACY_MODE: bool = PRIVACY_MODE_RAW in ("true", "1", "yes", "on")
+MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
+DB_NAME = os.getenv("MONGODB_DB_NAME", "calispec").strip()
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "dataset_records").strip()
 
-# LLM and Service URLs
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "https://api.ollama.com").rstrip("/")
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama_local").lower().strip()
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip()
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
+OLLAMA_LOCAL_URL = os.getenv("OLLAMA_LOCAL_URL", "http://localhost:11434").rstrip("/")
+
+LLM_MODE = os.getenv("LLM_MODE", "cloud_direct").lower().strip()
+OLLAMA_CLOUD_URL = os.getenv("OLLAMA_CLOUD_URL", os.getenv("OLLAMA_BASE_URL", "https://ollama.com")).rstrip("/")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss:120b")
+LLM_REASONING = os.getenv("LLM_REASONING", "low").strip()
 
-# Embedding & Vector Search Settings
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip()
 VECTOR_INDEX_NAME = os.getenv("VECTOR_INDEX_NAME", "vector_index").strip()
+RETRIEVE_K = int(os.getenv("RETRIEVE_K", "1000"))
+FINAL_K = int(os.getenv("FINAL_K", "1000"))
+NUM_CANDIDATES = int(os.getenv("NUM_CANDIDATES", "500"))
+RRF_K = int(os.getenv("RRF_K", "60"))
+MASK_PII = os.getenv("MASK_PII", "true").strip().lower() in ("true", "1", "yes", "on")
+
+# Retained for backwards compatibility across existing routes
+PRIVACY_MODE: bool = False
+OLLAMA_BASE_URL = OLLAMA_CLOUD_URL
 
 
 def is_local_url(url: str) -> bool:
@@ -43,29 +54,10 @@ def is_local_url(url: str) -> bool:
 
 
 def validate_privacy_and_llm_config() -> None:
-    """
-    Validates privacy mode and Ollama/LLM configuration at application startup:
-    1. If PRIVACY_MODE is True: logs that privacy protection is active and external
-       calls are disabled.
-    2. If PRIVACY_MODE is False and OLLAMA_BASE_URL is local: allows local LLM.
-    3. If PRIVACY_MODE is False and OLLAMA_BASE_URL is non-local: logs a prominent warning.
-    """
-    if PRIVACY_MODE:
-        print("[PRIVACY_MODE: ACTIVE] Confidential contact data protection is ENABLED.")
-        print("  - LLM and external embedding calls are strictly DISABLED.")
-        print("  - Search runs via regex and MongoDB text-index matching.")
-        print("  - Responses are formatted via deterministic synthesis.")
-        print("  - Query and record privacy logging guards are ACTIVE.")
-    else:
-        if is_local_url(OLLAMA_BASE_URL):
-            print(f"[LOCAL_LLM MODE: ACTIVE] LLM enabled with local endpoint: {OLLAMA_BASE_URL}")
-        else:
-            warning_msg = (
-                f"[SECURITY WARNING] PRIVACY_MODE is false and OLLAMA_BASE_URL ({OLLAMA_BASE_URL}) "
-                "points to a NON-LOCAL host! External services may receive confidential contact data. "
-                "Set PRIVACY_MODE=true in backend/.env to prevent external transmission."
-            )
-            print("=" * 70)
-            print(warning_msg)
-            print("=" * 70)
-            logger.warning(warning_msg)
+    """Validates local embedding and cloud LLM configuration at startup."""
+    print("[SECURITY: HYBRID RAG ACTIVE]")
+    print(f"  - Local Embeddings: {EMBEDDING_MODEL} ({EMBEDDING_DIM}-d) via {OLLAMA_LOCAL_URL}")
+    print(f"  - Cloud LLM       : {LLM_MODEL} (Mode: {LLM_MODE}, Reasoning: {LLM_REASONING})")
+    print(f"  - PII Protection  : {'ACTIVE (Masking enabled)' if MASK_PII else 'DISABLED'}")
+    print(f"  - Retrieval       : {VECTOR_INDEX_NAME} (RRF k={RRF_K}, Full similarity list, Max {FINAL_K})")
+

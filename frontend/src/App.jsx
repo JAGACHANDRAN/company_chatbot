@@ -11,6 +11,7 @@ import {
   deleteDatasetApi,
   getStoredUser,
   fetchCurrentUser,
+  setAuthSession,
   logoutApi
 } from './api';
 
@@ -60,10 +61,49 @@ export default function App() {
   const profilePanelRef = useRef(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [loginError, setLoginError] = useState('');
 
-  // Check auth and verify token validity on mount
+  // Check auth and verify token validity on mount, handling Google OAuth redirect
   useEffect(() => {
     async function initAuth() {
+      // Check if returning from Google OAuth redirect with ?token=...
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token');
+      const authError = params.get('auth_error');
+
+      if (token) {
+        const user_id = params.get('user_id') || '';
+        const email = params.get('email') || '';
+        const role = params.get('role') || 'CHAT_USER';
+        const userObj = { user_id, email, role };
+
+        setAuthSession(token, userObj);
+        setCurrentUser(userObj);
+
+        // Remove token query parameters from browser URL bar cleanly
+        window.history.replaceState({}, document.title, window.location.pathname);
+
+        // Fetch authoritative profile from backend /api/auth/me
+        const freshUser = await fetchCurrentUser();
+        if (freshUser) {
+          setCurrentUser(freshUser);
+        }
+        return;
+      }
+
+      if (authError) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        let errorMsg = 'Google authentication could not be completed.';
+        if (authError === 'google_oauth_not_configured') {
+          errorMsg = 'Google OAuth credentials are not yet configured on the server. Please check backend/.env.';
+        } else if (authError === 'cancelled' || authError === 'access_denied') {
+          errorMsg = 'Google authentication was cancelled.';
+        }
+        setLoginError(errorMsg);
+        setLoginModalOpen(true);
+      }
+
+      // Verify any existing stored token
       const user = await fetchCurrentUser();
       if (user) {
         setCurrentUser(user);
@@ -77,8 +117,10 @@ export default function App() {
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
     setLoginModalOpen(false);
+    setLoginError('');
     loadDatasets();
   };
+
 
   const handleLogout = async () => {
     await logoutApi();
@@ -922,9 +964,14 @@ export default function App() {
       {/* Enterprise Authentication Login Modal (Only when opened by user) */}
       <LoginModal
         isOpen={loginModalOpen}
-        onClose={() => setLoginModalOpen(false)}
+        onClose={() => {
+          setLoginModalOpen(false);
+          setLoginError('');
+        }}
         onLoginSuccess={handleLoginSuccess}
+        initialError={loginError}
       />
+
 
       {/* File Upload Modal (Only for DATA_UPLOADER) */}
       <FileUploadModal

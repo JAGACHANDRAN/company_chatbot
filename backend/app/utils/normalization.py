@@ -54,35 +54,61 @@ def is_valid_field_value(val: Any) -> bool:
 import unicodedata
 
 
+def collapse_acronym_spaces(text: str) -> str:
+    """
+    Collapses single-letter sequences separated by spaces into continuous acronyms:
+    't v s motor' -> 'tvs motor'
+    'b h e l' -> 'bhel'
+    """
+    if not text:
+        return ""
+    # Collapse single letters/digits separated by spaces: 't v s' -> 'tvs'
+    return re.sub(r"(?<=\b[a-z0-9])\s+(?=[a-z0-9]\b)", "", text)
+
+
+def normalize_company(text: Optional[str]) -> str:
+    """
+    Normalizes company name according to Step 1:
+    - lowercase
+    - '&' -> 'and'
+    - remove punctuation (replace with spaces)
+    - collapse spaces
+    - strip pvt/private/ltd/limited/inc/llp/llc/co/corp/company/india from the END only.
+    - collapses spaced acronyms (e.g. 't v s' -> 'tvs')
+    """
+    if text is None:
+        return ""
+    s = unicodedata.normalize("NFKD", str(text)).lower().strip()
+    s = s.replace("&", " and ")
+    # Remove punctuation
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # Collapse spaced acronyms (e.g. 't v s' -> 'tvs')
+    s = collapse_acronym_spaces(s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Strip legal suffixes and dangling trailing conjunctions from END only
+    suffix_pattern = r"\b(pvt|private|ltd|limited|inc|incorporated|llp|llc|co|corp|corporation|company|india|and)\b$"
+    while True:
+        s_new = re.sub(suffix_pattern, "", s).strip()
+        if s_new == s:
+            break
+        s = s_new
+    return s
+
+
 def normalize_company_name(name: Optional[str]) -> str:
     """
-    Normalizes company name for exact and clean entity matching:
-    - Lowercase
-    - Trim whitespace
-    - Collapse repeated spaces
-    - Normalize harmless punctuation (replace punctuation like dots, commas, quotes, parentheses with spaces)
-    - Normalize Unicode
-    - PRESERVES meaningful legal/company-name tokens:
-      INC, LTD, LIMITED, PVT, PVT LTD, PRIVATE LIMITED, LLP, LLC, CORP, CORPORATION, CO, COMPANY.
-    Example:
-    '2D INC' -> '2d inc'
-    'ABC Pvt. Ltd.' -> 'abc pvt ltd'
-    'TVS Motor Company' -> 'tvs motor company'
+    Alias to normalize_company for backwards-compatibility.
     """
-    if name is None:
-        return ""
-    s = unicodedata.normalize("NFKD", str(name))
-    s = s.lower().strip()
-    # Normalize harmless punctuation without stripping corporate words
-    s = re.sub(r"[\.,;:_()\[\]/\\\'\"]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return normalize_company(name)
 
 
 def normalize_company_search_variants(raw_value: str) -> List[str]:
     """
     Returns list of search variants for a company name without stripping identity.
     e.g. '2D INC' -> ['2D INC', '2d inc']
+         'TVS' -> ['TVS', 'tvs', 'T V S', 'T.V.S.']
     """
     clean = str(raw_value).strip()
     if not clean:
@@ -91,6 +117,16 @@ def normalize_company_search_variants(raw_value: str) -> List[str]:
     norm = normalize_company_name(clean)
     if norm and norm.lower() != clean.lower():
         variants.append(norm)
+
+    # For short acronyms (2 to 5 chars), generate spaced and dotted variations
+    alpha_clean = re.sub(r"[^A-Za-z0-9]", "", clean)
+    if 2 <= len(alpha_clean) <= 5:
+        spaced = " ".join(list(alpha_clean))
+        dotted = ".".join(list(alpha_clean)) + "."
+        for v in (spaced, spaced.lower(), dotted, dotted.lower(), alpha_clean, alpha_clean.lower()):
+            if v not in variants:
+                variants.append(v)
+
     return variants
 
 
@@ -99,7 +135,8 @@ def is_company_match(query_company: str, record_company: str) -> bool:
     Validates whether a candidate record company matches an explicit query company.
     Strict entity guard:
     - Exact match on normalized names ('2d inc' == '2d inc')
-    - Word boundary / controlled entity match ('tvs' matches 'tvs motor company' or 'delphi tvs')
+    - Word boundary / controlled entity match:
+      'tvs' matches 'tvs motor company', 't v s motor company ltd', 'delphi tvs', 'lucas-tvs'
     - REJECTS unrelated companies (e.g. 'accumen automation' for '2d inc').
     """
     if not query_company or not record_company:
@@ -111,19 +148,31 @@ def is_company_match(query_company: str, record_company: str) -> bool:
     if norm_q == norm_r:
         return True
 
-    q_words = norm_q.split()
-    if len(q_words) == 1:
-        q_token = q_words[0]
-        pattern = rf"(^|\s|\-){re.escape(q_token)}(\s|\-|$)"
-        return bool(re.search(pattern, norm_r))
+    # Check uncollapsed vs collapsed comparisons
+    raw_norm_q = re.sub(r"\s+", " ", re.sub(r"[\.,;:_()\[\]/\\\'\"]+", " ", str(query_company).lower())).strip()
+    raw_norm_r = re.sub(r"\s+", " ", re.sub(r"[\.,;:_()\[\]/\\\'\"]+", " ", str(record_company).lower())).strip()
 
-    pattern = rf"(^|\s|\-){re.escape(norm_q)}(\s|\-|$)"
-    if re.search(pattern, norm_r):
-        return True
+    for q_cand in (norm_q, raw_norm_q):
+        for r_cand in (norm_r, raw_norm_r):
+            if not q_cand or not r_cand:
+                continue
+            if q_cand == r_cand:
+                return True
 
-    rec_pattern = rf"(^|\s|\-){re.escape(norm_r)}(\s|\-|$)"
-    if re.search(rec_pattern, norm_q):
-        return True
+            q_words = q_cand.split()
+            if len(q_words) == 1:
+                q_token = q_words[0]
+                pattern = rf"(^|\s|\-){re.escape(q_token)}(\s|\-|$)"
+                if re.search(pattern, r_cand):
+                    return True
+            else:
+                pattern = rf"(^|\s|\-){re.escape(q_cand)}(\s|\-|$)"
+                if re.search(pattern, r_cand):
+                    return True
+
+            rec_pattern = rf"(^|\s|\-){re.escape(r_cand)}(\s|\-|$)"
+            if re.search(rec_pattern, q_cand):
+                return True
 
     return False
 

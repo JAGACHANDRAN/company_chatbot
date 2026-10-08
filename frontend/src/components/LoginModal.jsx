@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import { loginApi } from '../api';
 
-export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
+export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialError = '' }) {
   const [mode, setMode] = useState('signup'); // 'signup' | 'login'
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(initialError || '');
   const [infoMessage, setInfoMessage] = useState('');
 
   if (!isOpen) return null;
@@ -42,8 +42,15 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
   };
 
   const handleOAuthClick = (provider) => {
+    if (provider === 'Google') {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+      window.location.href = `${apiUrl}/auth/google/login`;
+      return;
+    }
     setInfoMessage(`Signing in with ${provider}... Please use company credentials or your work email.`);
   };
+
+
 
   return (
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-start bg-[#f8fafc] calispec-blueprint-canvas px-4 pt-6 sm:pt-8 pb-12 overflow-y-auto select-none animate-fadeIn min-h-screen">

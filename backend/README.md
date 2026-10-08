@@ -1,14 +1,15 @@
 # Calispec AI Search Chatbot — Backend (FastAPI + MongoDB Atlas)
 
-High-performance FastAPI backend delivering structured and semantic search across **MongoDB Atlas** collections and uploaded tabular datasets (CSV / Excel).
+High-performance FastAPI backend delivering secure Hybrid RAG search across **MongoDB Atlas** collections and uploaded tabular datasets (CSV / Excel).
 
 ---
 
-## 🏛️ Architecture & Highlights
+## 🔒 Secure Hybrid RAG Architecture & Highlights
 
-- **FastAPI Core**: RESTful API endpoints for natural language hybrid search, real-time chat, dataset ingestion, data cleaning, and role-based authentication.
-- **MongoDB Atlas Integration**: Query routing across both pre-configured static collections and dynamic uploaded datasets using indexed exact matching, word-bound regex, and vector embeddings.
-- **Strict Privacy Mode (`PRIVACY_MODE=true`)**: Zero external leakage of confidential company or contact records. Operates 100% locally with deterministic response synthesis when enabled.
+- **Local Embeddings (Strict Zero Leakage)**: 100% of record vector embeddings are generated locally via `http://localhost:11434` using `nomic-embed-text` (768 dimensions). No database record is ever transmitted to a cloud embedding API.
+- **Reciprocal Rank Fusion (RRF k=60)**: Merges vector semantic matches and lexical structured matches, deduplicating records and returning the full list of similar candidates.
+- **Strict PII Masking**: The cloud LLM (`gpt-oss:120b` on Ollama Cloud) receives only: question + short chat history (3 turns) + records with only `company`, `person`, `designation`, and `city`. Phone numbers and emails are replaced with `[PHONE_1]`, `[EMAIL_1]`... placeholders before transmission and restored in the backend afterwards.
+- **Zero-LLM Exact Lookup**: Phone, email, and exact name queries are answered directly from MongoDB without invoking the LLM.
 - **Admin Data Cleaning & In-Place Normalization**:
   - Interactive dry-run cleaning preview cached in memory with a 15-minute TTL.
   - Multi-sheet Excel audit report export.
@@ -16,48 +17,68 @@ High-performance FastAPI backend delivering structured and semantic search acros
 - **Role-Based Access Control (RBAC)**:
   - Unified MongoDB `users` collection.
   - JWT Bearer authentication issuing signed access tokens with verified role claims (`DATA_UPLOADER` vs `CHAT_USER`).
-- **Dynamic Dataset Management**: Live upload of CSV / Excel files with automated schema detection, column normalization, and indexing into MongoDB.
 
 ---
 
-## 📋 Prerequisites
+## 🚀 RAG Setup & Quickstart
 
-1. **Python 3.10+ / 3.11+**
-2. **MongoDB Atlas** or self-hosted MongoDB instance (read/write access)
-3. *(Optional)* **Ollama** (Local instance or Cloud API key for non-privacy LLM parsing)
+Follow these 5 steps to initialize the secure Hybrid RAG system:
 
----
-
-## 🚀 Setup Instructions
-
-### 1. Create and Activate Virtual Environment
-
-```powershell
-cd backend
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+### 1. Pull Local Embedding Model in Ollama
+Ensure local Ollama is running and pull `nomic-embed-text`:
+```bash
+ollama pull nomic-embed-text
 ```
 
-### 2. Install Dependencies
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-### 3. Configure Environment Variables
-
-Copy `.env.example` to `.env` and fill in your MongoDB connection details:
-
-```powershell
-cp .env.example .env
-```
-
-Key variables in `.env`:
+### 2. Configure `.env`
+Ensure your `backend/.env` contains your MongoDB Atlas URI and Ollama Cloud settings:
 ```env
-# MongoDB Atlas Connection
-MONGODB_URI=mongodb+srv://<username>:<password>@<cluster-address>.mongodb.net/?retryWrites=true&w=majority
+MONGODB_URI=mongodb+srv://<user>:<pwd>@cluster0.mongodb.net/
 MONGODB_DB_NAME=calispec
-MONGODB_COLLECTIONS=collection_1, collection_2, collection_3
+COLLECTION_NAME=dataset_records
+
+EMBEDDING_PROVIDER=ollama_local
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIM=768
+OLLAMA_LOCAL_URL=http://localhost:11434
+
+LLM_MODE=cloud_direct
+OLLAMA_CLOUD_URL=https://ollama.com
+OLLAMA_API_KEY=your_ollama_cloud_api_key_here
+LLM_MODEL=gpt-oss:120b
+LLM_REASONING=low
+
+VECTOR_INDEX_NAME=vector_index
+RETRIEVE_K=20
+FINAL_K=5
+NUM_CANDIDATES=200
+RRF_K=60
+MASK_PII=true
+```
+
+### 3. Setup MongoDB Atlas Vector Search Index
+Create the 768-d cosine vector index and B-tree search indexes:
+```bash
+python setup_mongodb.py
+```
+
+### 4. Re-embed All Records (Resumable)
+Embed all ~12,199 records with 768-d local vectors:
+```bash
+python scripts/reembed_all.py
+```
+
+### 5. Check RAG Health Status
+Verify the system status via the diagnostics endpoint:
+```bash
+# In your browser or terminal:
+curl http://127.0.0.1:8000/api/health/rag
+```
+Expect `"status": "green"`, `"index_status": "READY"`, `"embedded_count": 12199`, and `"fallback_used_recently": "no"`.
+
+---
+
+## 📋 Full Installation Instructions
 
 # Privacy Mode (Set to true to disable all external LLM / API calls)
 PRIVACY_MODE=true

@@ -1,6 +1,11 @@
+"""
+Reranker and Reciprocal Rank Fusion (RRF) Service.
+Combines and reranks search results from lexical and vector retrieval streams.
+"""
 from typing import List, Dict, Any, Optional
 from ..utils.normalization import normalize_company_name, normalize_person_name, normalize_text
 from .query_understanding import StructuredQuery
+from ..config import RRF_K, FINAL_K
 
 
 def compute_relevance_score(
@@ -19,12 +24,12 @@ def compute_relevance_score(
     """
     score = 0.0
 
-    rec_comp = normalize_company_name(record.get("company_name"))
-    rec_person = normalize_person_name(record.get("person_name"))
+    rec_comp = normalize_company_name(record.get("company_name") or record.get("company"))
+    rec_person = normalize_person_name(record.get("person_name") or record.get("person"))
     rec_desig = normalize_text(record.get("designation"))
     rec_dept = normalize_text(record.get("department"))
     rec_state = normalize_text(record.get("state"))
-    rec_city = normalize_text(record.get("city"))
+    rec_city = normalize_text(record.get("city") or record.get("location"))
     rec_loc = normalize_text(record.get("location"))
 
     # 1. Company match
@@ -74,7 +79,9 @@ def compute_relevance_score(
     # 6. Quality boost if record has phone or email
     has_contact = (
         record.get("contact_number") not in (None, "Not Available", "")
+        or record.get("phone") not in (None, "Not Available", "")
         or record.get("personal_mail_id") not in (None, "Not Available", "")
+        or record.get("email") not in (None, "Not Available", "")
     )
     if has_contact:
         score += 1.0
@@ -82,11 +89,50 @@ def compute_relevance_score(
     return score
 
 
+def reciprocal_rank_fusion(
+    ranked_lists: List[List[Dict[str, Any]]],
+    k: int = RRF_K,
+    top_k: int = FINAL_K
+) -> List[Dict[str, Any]]:
+    """
+    Combines multiple ranked result lists using Reciprocal Rank Fusion (RRF).
+    Formula: RRF_score(d) = sum(1 / (k + rank)) across ranking channels.
+    Dedupes by document _id (or normalized entity signature) and returns top_k docs.
+    """
+    scores: Dict[str, float] = {}
+    doc_map: Dict[str, Dict[str, Any]] = {}
+
+    for ranking in ranked_lists:
+        for rank, doc in enumerate(ranking, start=1):
+            doc_id = str(doc.get("_id") or "")
+            if not doc_id:
+                # Fallback entity signature
+                c = doc.get("company_name") or doc.get("company") or ""
+                p = doc.get("person_name") or doc.get("person") or ""
+                doc_id = f"{c}::{p}"
+
+            rrf_delta = 1.0 / (k + rank)
+            scores[doc_id] = scores.get(doc_id, 0.0) + rrf_delta
+
+            if doc_id not in doc_map:
+                doc_map[doc_id] = doc
+
+    # Sort documents by total RRF score descending
+    sorted_doc_ids = sorted(scores.keys(), key=lambda did: scores[did], reverse=True)
+    fused_results = []
+    for did in sorted_doc_ids[:top_k]:
+        doc = doc_map[did]
+        doc["rrf_score"] = round(scores[did], 6)
+        fused_results.append(doc)
+
+    return fused_results
+
+
 def rerank_records(
     records: List[Dict[str, Any]],
     structured_query: StructuredQuery,
     original_query: str,
-    top_k: int = 50
+    top_k: int = FINAL_K
 ) -> List[Dict[str, Any]]:
     """
     Reranks candidate records by relevance score and limits to top_k.
@@ -100,6 +146,5 @@ def rerank_records(
         s = compute_relevance_score(rec, structured_query, original_query)
         scored_records.append((s, rec))
 
-    # Sort descending by score
     scored_records.sort(key=lambda x: x[0], reverse=True)
-    return [rec for _, rec in scored_records[:top_k]]
+    return [r for _, r in scored_records[:top_k]]

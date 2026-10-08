@@ -8,8 +8,13 @@ from ..config import (
     OLLAMA_API_KEY,
     LLM_MODEL,
 )
-from .query_understanding import StructuredQuery
+from .query_understanding import StructuredQuery, FollowupFilter
 from ..utils.normalization import normalize_company_name, normalize_person_name
+from .source_resolver import (
+    get_record_sources,
+    get_record_source_display,
+    get_company_sources_summary
+)
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are a STRICT RESPONSE FORMATTER for retrieved company/contact data.
 
@@ -133,7 +138,7 @@ def extract_single_source_file(rec: Dict[str, Any]) -> Optional[str]:
     - Uses exact source filename provided by backend.
     - Never displays internal database names (MongoDB Atlas) or collection names.
     """
-    sf = rec.get("source_file")
+    sf = rec.get("source_file") or rec.get("Source File") or rec.get("filename") or rec.get("file_name")
     if not sf:
         raw_s = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
         sf = (
@@ -160,178 +165,224 @@ def extract_single_source_file(rec: Dict[str, Any]) -> Optional[str]:
     return cv_clean
 
 
-def extract_company_name(rec: Dict[str, Any]) -> str:
-    """Extracts company name from normalized record or source fields."""
-    sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
-    candidates = [
-        rec.get("company_name"),
-        sf.get("Company Name"),
-        sf.get("Company"),
-        sf.get("company_name"),
-        sf.get("Organization"),
-        sf.get("organization"),
-        sf.get("company"),
-        rec.get("company"),
+def is_empty_val(v: Any) -> bool:
+    """Returns True if value is None, empty string, or standard null placeholder."""
+    if v is None:
+        return True
+    s = str(v).strip()
+    return s == "" or s.lower() in NULL_INDICATORS
+
+
+def get_contact_fields(record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    SINGLE SOURCE OF TRUTH for all contact and entity fields.
+    Checks candidate containers in strict order:
+      top-level -> normalized_data{} -> data{} -> source_fields{}
+    Collects every non-empty value, dedupes (case-insensitive, strip spaces).
+    Returns dict:
+      company: str
+      contact_persons: List[str]
+      designations: List[str]
+      emails: List[str]
+      phones: List[str]
+      linkedin: List[str]
+      address: str
+      city: str
+      state: str
+      dataset_name: str
+    """
+    if not isinstance(record, dict):
+        return {
+            "company": "No data available",
+            "contact_persons": [],
+            "designations": [],
+            "emails": [],
+            "phones": [],
+            "linkedin": [],
+            "address": "No data available",
+            "city": "No data available",
+            "state": "No data available",
+            "dataset_name": "No data available"
+        }
+
+    containers = [
+        record,
+        record.get("normalized_data") if isinstance(record.get("normalized_data"), dict) else {},
+        record.get("data") if isinstance(record.get("data"), dict) else {},
+        record.get("source_fields") if isinstance(record.get("source_fields"), dict) else {},
     ]
-    for c in candidates:
-        cv = clean_val(c)
-        if cv:
-            return cv
-    return "Not Available"
+
+    def collect_values(candidate_keys: List[str], is_email: bool = False, is_phone: bool = False) -> List[str]:
+        results = []
+        seen = set()
+        for c in containers:
+            if not isinstance(c, dict):
+                continue
+            for k in candidate_keys:
+                if k in c:
+                    raw = c[k]
+                    if is_empty_val(raw):
+                        continue
+                    parts = [str(x) for x in raw] if isinstance(raw, list) else [str(raw)]
+                    for p in parts:
+                        p_str = p.strip()
+                        if is_empty_val(p_str):
+                            continue
+                        if is_email:
+                            found = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", p_str)
+                            if found:
+                                for em in found:
+                                    em_c = em.strip()
+                                    if em_c.lower() not in seen and not is_empty_val(em_c):
+                                        seen.add(em_c.lower())
+                                        results.append(em_c)
+                            elif "@" in p_str and "." in p_str:
+                                em_c = p_str.strip()
+                                if em_c.lower() not in seen and not is_empty_val(em_c):
+                                    seen.add(em_c.lower())
+                                    results.append(em_c)
+                        elif is_phone:
+                            sub_phones = re.split(r"[/,;]\s*", p_str)
+                            for ph in sub_phones:
+                                ph_c = ph.strip()
+                                digits = re.sub(r"\D", "", ph_c)
+                                if len(digits) >= 5 and digits not in seen and not is_empty_val(ph_c):
+                                    seen.add(digits)
+                                    results.append(ph_c)
+                        else:
+                            p_c = p_str.strip()
+                            if p_c.lower() not in seen and not is_empty_val(p_c):
+                                seen.add(p_c.lower())
+                                results.append(p_c)
+        return results
+
+    # 1. Company Name
+    comp_cand = ["company", "Company Name", "company_name", "Company", "organization", "firm", "business name", "customer"]
+    comp_list = collect_values(comp_cand)
+    company_val = comp_list[0] if comp_list else "No data available"
+
+    # 2. Contact Person
+    person_cand = ["person", "Person Name", "person_name", "Contact Person", "contact_person", "Name", "name", "employee_name", "full name", "client name"]
+    persons = collect_values(person_cand)
+
+    # 3. Designation
+    desig_cand = ["designation", "Designation", "role", "Role", "job title", "title", "Title", "position"]
+    designations = collect_values(desig_cand)
+
+    # 4. Emails
+    email_cand = ["email", "Email", "email_2", "Email 2", "Email 1", "email_1", "e-mail", "E-mail", "Mail", "mail", "Email Address"]
+    emails = collect_values(email_cand, is_email=True)
+
+    # 5. Phones
+    phone_cand = ["phone", "Contact Number", "contact_number", "phone_2", "Phone 2", "Phone", "Phone 1", "mobile", "Mobile", "Mobile No.", "tel", "telephone", "landline", "contact_no", "cell"]
+    phones = collect_values(phone_cand, is_phone=True)
+
+    # 6. LinkedIn
+    linkedin_cand = ["linkedin", "LinkedIn", "LinkedIn URL", "linkedin_url", "LinkedIn Profile", "linkedin_profile", "linkedin_link"]
+    linkedins = collect_values(linkedin_cand)
+
+    # 7. Location (Address, City, State)
+    addr_val = None
+    city_val = None
+    state_val = None
+
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        if not city_val:
+            for k in ["City", "city", "town", "Town"]:
+                if k in c and not is_empty_val(c[k]):
+                    city_val = str(c[k]).strip()
+                    break
+        if not state_val:
+            for k in ["State", "state", "province", "Province"]:
+                if k in c and not is_empty_val(c[k]):
+                    state_val = str(c[k]).strip()
+                    break
+        if not addr_val:
+            for k in ["Address", "address", "Location", "location", "street", "Street"]:
+                if k in c and not is_empty_val(c[k]):
+                    addr_val = str(c[k]).strip()
+                    break
+
+    # Parse address string if city / state are missing
+    if addr_val and (not city_val or not state_val):
+        addr_low = addr_val.lower()
+        known_cities = [
+            "chennai", "mumbai", "bangalore", "bengaluru", "coimbatore",
+            "hyderabad", "pune", "delhi", "kolkata", "hosur", "gurgaon",
+            "noida", "faridabad", "ahmedabad", "madurai", "salem", "trichy",
+            "doddaballapur", "kanchipuram", "aurangabad", "gangapur", "pithampur"
+        ]
+        known_states = [
+            "tamil nadu", "andhra pradesh", "karnataka", "maharashtra",
+            "kerala", "gujarat", "haryana", "uttar pradesh", "telangana", "madhya pradesh"
+        ]
+        if not city_val:
+            for c_name in known_cities:
+                if re.search(rf"\b{re.escape(c_name)}\b", addr_low):
+                    city_val = c_name.title()
+                    break
+        if not state_val:
+            for s_name in known_states:
+                if re.search(rf"\b{re.escape(s_name)}\b", addr_low):
+                    state_val = s_name.title()
+                    break
+
+    dataset_name = get_record_source_display(record)
+
+    return {
+        "company": company_val,
+        "contact_persons": persons,
+        "designations": designations,
+        "emails": emails,
+        "phones": phones,
+        "linkedin": linkedins,
+        "address": addr_val or "No data available",
+        "city": city_val or "No data available",
+        "state": state_val or "No data available",
+        "dataset_name": dataset_name
+    }
+
+
+def extract_company_name(rec: Dict[str, Any]) -> str:
+    """Extracts company name using get_contact_fields."""
+    return get_contact_fields(rec)["company"]
 
 
 def extract_contact_numbers(rec: Dict[str, Any]) -> List[str]:
-    """Extracts, splits, normalizes, and deduplicates all phone/mobile numbers."""
-    numbers = []
-    sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
-
-    keys_to_check = [
-        rec.get("phone"),
-        rec.get("phone_2"),
-        rec.get("contact_number"),
-        rec.get("mobile_no"),
-        rec.get("telephone_1"),
-        rec.get("telephone_2"),
-        rec.get("landline_telephone"),
-        rec.get("landline_other_no"),
-    ]
-    for k, v in sf.items():
-        k_low = k.lower()
-        if any(term in k_low for term in ["phone", "mobile", "tel", "contact_no", "contact no", "contact number"]):
-            keys_to_check.append(v)
-
-    seen = set()
-    for raw in keys_to_check:
-        cv = clean_val(raw)
-        if not cv:
-            continue
-        split_vals = re.split(r"[/,;]\s*", cv)
-        for part in split_vals:
-            cleaned_num = part.strip()
-            digits_only = re.sub(r"\D", "", cleaned_num)
-            if len(digits_only) >= 5:
-                if digits_only not in seen:
-                    seen.add(digits_only)
-                    numbers.append(cleaned_num)
-    return numbers
+    """Extracts contact numbers using get_contact_fields."""
+    return get_contact_fields(rec)["phones"]
 
 
 def extract_emails(rec: Dict[str, Any]) -> List[str]:
-    """Extracts and deduplicates all valid email addresses."""
-    emails = []
-    sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
-
-    keys_to_check = [
-        rec.get("personal_mail_id"),
-        rec.get("email"),
-        rec.get("email_1"),
-        rec.get("email_2"),
-    ]
-    for k, v in sf.items():
-        k_low = k.lower()
-        if "email" in k_low or "mail" in k_low:
-            keys_to_check.append(v)
-
-    seen = set()
-    email_regex = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
-    for raw in keys_to_check:
-        cv = clean_val(raw)
-        if not cv:
-            continue
-        matches = email_regex.findall(cv)
-        if matches:
-            for em in matches:
-                em_clean = em.strip()
-                if em_clean.lower() not in seen:
-                    seen.add(em_clean.lower())
-                    emails.append(em_clean)
-        elif "@" in cv and "." in cv:
-            em_clean = cv.strip()
-            if em_clean.lower() not in seen:
-                seen.add(em_clean.lower())
-                emails.append(em_clean)
-    return emails
+    """Extracts emails using get_contact_fields."""
+    return get_contact_fields(rec)["emails"]
 
 
 def extract_location(rec: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Extracts address, city, and state."""
-    sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
-    address = None
-    for k in ["address", "Address", "Company Address", "Street", "location", "Location"]:
-        val = rec.get(k) or sf.get(k)
-        cv = clean_val(val)
-        if cv:
-            address = cv
-            break
-
-    city = None
-    for k in ["city", "City", "Town"]:
-        val = rec.get(k) or sf.get(k)
-        cv = clean_val(val)
-        if cv:
-            city = cv
-            break
-
-    state = None
-    for k in ["state", "State", "Province"]:
-        val = rec.get(k) or sf.get(k)
-        cv = clean_val(val)
-        if cv:
-            state = cv
-            break
-
-    return {"address": address, "city": city, "state": state}
+    """Extracts location dict using get_contact_fields."""
+    f = get_contact_fields(rec)
+    return {
+        "address": f["address"] if f["address"] != "No data available" else None,
+        "city": f["city"] if f["city"] != "No data available" else None,
+        "state": f["state"] if f["state"] != "No data available" else None,
+    }
 
 
 def extract_person_info(rec: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Extracts contact person name and designation."""
-    sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
-    name = None
-    for k in ["person", "person_name", "contact_person", "Name", "Contact Person", "Person Name", "Employee Name", "Customer Name", "Contact"]:
-        val = rec.get(k) or sf.get(k)
-        cv = clean_val(val)
-        if cv:
-            name = cv
-            break
-
-    designation = None
-    for k in ["designation", "Designation", "Role", "Title", "Position", "Job Title"]:
-        val = rec.get(k) or sf.get(k)
-        cv = clean_val(val)
-        if cv:
-            designation = cv
-            break
-
-    return {"name": name, "designation": designation}
+    """Extracts person name and designation using get_contact_fields."""
+    f = get_contact_fields(rec)
+    return {
+        "name": f["contact_persons"][0] if f["contact_persons"] else None,
+        "designation": f["designations"][0] if f["designations"] else None
+    }
 
 
 def extract_linkedin(rec: Dict[str, Any]) -> Optional[str]:
-    """Extracts genuine LinkedIn URL or profile link."""
-    sf = rec.get("source_fields") or rec.get("raw_data") or rec.get("data") or {}
-    candidates = [
-        rec.get("linkedin_url"),
-        rec.get("linkedin"),
-        rec.get("linkedin_profile"),
-        sf.get("LinkedIn URL"),
-        sf.get("LinkedIn"),
-        sf.get("linkedin_url"),
-        sf.get("linkedin"),
-        sf.get("LinkedIn Profile"),
-        sf.get("profile_url"),
-        sf.get("Profile URL"),
-    ]
-    for c in candidates:
-        cv = clean_val(c)
-        if cv:
-            return cv
-
-    for k, v in sf.items():
-        if "linkedin" in k.lower():
-            cv = clean_val(v)
-            if cv:
-                return cv
-
-    return None
+    """Extracts LinkedIn URL using get_contact_fields."""
+    f = get_contact_fields(rec)
+    return f["linkedin"][0] if f["linkedin"] else None
 
 
 def format_location_lines(loc: Dict[str, Optional[str]], prefix: str = "- ") -> List[str]:
@@ -365,179 +416,386 @@ def format_location_lines(loc: Dict[str, Optional[str]], prefix: str = "- ") -> 
     return lines
 
 
+def format_field_specific_answer(
+    records: List[Dict[str, Any]],
+    structured_query: StructuredQuery
+) -> str:
+    """
+    Renders a clean, field-specific answer with exact matching header:
+    'Found {N} companies matching '{company}'. {X} have an {field}, {Y} do not.'
+    Displays only Company Name + requested fields (with 'Not Available' for missing values).
+    """
+    if not records:
+        return "No data found"
+
+    req_fields = structured_query.requested_fields or []
+    missing_filter = structured_query.missing_filter
+    comp_target = ", ".join(structured_query.companies) if structured_query.companies else "the query"
+    total_docs = len(records)
+
+    # Determine availability metrics
+    primary_field = req_fields[0] if req_fields else (missing_filter or "contact details")
+    
+    def has_field_val(rec: Dict[str, Any], f: str) -> bool:
+        if f == "email":
+            return bool(extract_emails(rec))
+        elif f == "phone":
+            return bool(extract_contact_numbers(rec))
+        elif f == "linkedin":
+            return bool(extract_linkedin(rec))
+        elif f == "city":
+            return bool(extract_location(rec).get("city"))
+        elif f == "state":
+            return bool(extract_location(rec).get("state"))
+        elif f == "address":
+            return bool(extract_location(rec).get("address"))
+        elif f == "designation":
+            return bool(extract_person_info(rec).get("designation"))
+        elif f == "person":
+            return bool(extract_person_info(rec).get("name"))
+        return False
+
+    with_field_count = sum(1 for r in records if has_field_val(r, primary_field))
+    without_field_count = total_docs - with_field_count
+
+    # Build Header
+    field_label = primary_field.title() if primary_field != "linkedin" else "LinkedIn profile"
+    article = "an" if primary_field.lower().startswith(("e", "a", "i", "o")) else "a"
+    if primary_field == "phone":
+        field_label_phrase = "a contact number"
+    elif primary_field == "email":
+        field_label_phrase = "an email"
+    elif primary_field == "linkedin":
+        field_label_phrase = "a LinkedIn profile"
+    else:
+        field_label_phrase = f"{article} {primary_field}"
+
+    if structured_query.is_count_query:
+        return f"Found {total_docs} companies matching '{comp_target}'. {with_field_count} have {field_label_phrase}, {without_field_count} do not."
+
+    if missing_filter:
+        header = f"Found {without_field_count} companies matching '{comp_target}' with no {missing_filter}."
+        target_records = [r for r in records if not has_field_val(r, missing_filter)]
+        if not target_records:
+            return f"All {total_docs} companies matching '{comp_target}' have {missing_filter} available."
+    else:
+        header = f"Found {total_docs} companies matching '{comp_target}'. {with_field_count} have {field_label_phrase}, {without_field_count} do not."
+        target_records = records
+
+    lines = [header, ""]
+
+    # Format record cards with ONLY requested fields
+    for idx, rec in enumerate(target_records, 1):
+        c_name = extract_company_name(rec)
+        s_file = extract_single_source_file(rec)
+        
+        lines.append(f"Source File: {s_file}")
+        lines.append(f"Company Name: {c_name}")
+
+        p_info = extract_person_info(rec)
+        emails = extract_emails(rec)
+        phones = extract_contact_numbers(rec)
+        loc = extract_location(rec)
+        linkedin = extract_linkedin(rec)
+
+        if "person" in req_fields:
+            lines.append(f"- Person Name: {p_info['name'] if p_info['name'] else 'Not Available'}")
+        if "designation" in req_fields:
+            lines.append(f"- Designation: {p_info['designation'] if p_info['designation'] else 'Not Available'}")
+        if "email" in req_fields:
+            if emails:
+                for e_i, em in enumerate(emails, 1):
+                    lines.append(f"- Email {e_i}: {em}")
+            else:
+                lines.append("- Email 1: Not Available")
+        if "phone" in req_fields:
+            if phones:
+                for p_i, ph in enumerate(phones, 1):
+                    lines.append(f"- Contact Number {p_i}: {ph}")
+            else:
+                lines.append("- Contact Number 1: Not Available")
+        if "city" in req_fields:
+            lines.append(f"- City: {loc['city'] if loc['city'] else 'Not Available'}")
+        if "state" in req_fields:
+            lines.append(f"- State: {loc['state'] if loc['state'] else 'Not Available'}")
+        if "address" in req_fields:
+            lines.append(f"- Address: {loc['address'] if loc['address'] else 'Not Available'}")
+        if "linkedin" in req_fields:
+            lines.append(f"- LinkedIn: {linkedin if linkedin else 'Not Available'}")
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def extract_single_source_file(rec: Dict[str, Any]) -> str:
+    """
+    Extracts genuine source file name(s) from a record.
+    Adheres strictly to SOURCE RULES:
+    - Merged records show all origin sources.
+    - If no source is stored, returns 'Not available'.
+    """
+    return get_record_source_display(rec)
+
+
+def format_followup_answer(
+    records: List[Dict[str, Any]],
+    total_prev_count: int,
+    followup_filter: FollowupFilter,
+    company_name: Optional[str] = None
+) -> str:
+    """
+    Renders deterministic follow-up availability filter results with exact header:
+    '{K} of {N} previous {company} results have an {field}. {M} excluded.'
+    If K == 0:
+    '0 of {N} previous {company} results have an {field}. All {N} records were excluded.'
+    """
+    K = len(records)
+    N = total_prev_count
+    M = N - K
+    comp_label = f" {company_name}" if company_name else ""
+
+    # Build field phrase from conditions / location / fields
+    cond_phrases = []
+    for c in followup_filter.conditions:
+        f = c["field"]
+        req = c["required"]
+        if f == "email":
+            cond_phrases.append("an email" if req else "no email")
+        elif f == "phone":
+            cond_phrases.append("a contact number" if req else "no contact number")
+        elif f == "linkedin":
+            cond_phrases.append("a LinkedIn profile" if req else "no LinkedIn profile")
+        elif f == "address":
+            cond_phrases.append("an address" if req else "no address")
+        elif f == "person":
+            cond_phrases.append("a contact person" if req else "no contact person")
+        elif f == "designation":
+            cond_phrases.append("a designation" if req else "no designation")
+
+    if followup_filter.location_filter:
+        cond_phrases.append(f"located in {followup_filter.location_filter}")
+
+    op_str = f" {followup_filter.operator.lower()} "
+    field_phrase = op_str.join(cond_phrases) if cond_phrases else "the requested criteria"
+
+    if K == 0:
+        return f"0 of {N} previous{comp_label} results have {field_phrase}. All {N} records were excluded."
+
+    if M == 0:
+        header = f"All {K} of {N} previous{comp_label} results have {field_phrase}."
+    else:
+        header = f"{K} of {N} previous{comp_label} results have {field_phrase}. {M} excluded."
+
+    if followup_filter.is_count_query:
+        return header
+
+    lines = [header, ""]
+
+    # Render filtered records
+    for idx, rec in enumerate(records, 1):
+        c_name = extract_company_name(rec)
+        s_file = get_record_source_display(rec)
+        lines.append(f"Source File: {s_file}")
+        lines.append(f"Company Name: {c_name}")
+
+        p_info = extract_person_info(rec)
+        emails = extract_emails(rec)
+        phones = extract_contact_numbers(rec)
+        loc = extract_location(rec)
+        linkedin = extract_linkedin(rec)
+
+        lines.append(f"Contact Person 1:")
+        lines.append(f"- Name: {p_info['name'] if p_info['name'] else 'Not Available'}")
+        lines.append(f"- Designation: {p_info['designation'] if p_info['designation'] else 'Not Available'}")
+        lines.append(f"- LinkedIn: {linkedin if linkedin else 'Not Available'}")
+
+        if phones:
+            for p_i, ph in enumerate(phones, 1):
+                lines.append(f"- Contact Number {p_i}: {ph}")
+        else:
+            lines.append("- Contact Number 1: Not Available")
+
+        if emails:
+            for e_i, em in enumerate(emails, 1):
+                lines.append(f"- Email {e_i}: {em}")
+        else:
+            lines.append("- Email 1: Not Available")
+
+        loc_lines = format_location_lines(loc, prefix="- ")
+        lines.extend(loc_lines)
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def group_and_deduplicate_records(
+    records: List[Dict[str, Any]],
+    structured_query: Optional[StructuredQuery] = None
+) -> List[Dict[str, Any]]:
+    """
+    Groups and deduplicates records:
+    1. Extracts fields using get_contact_fields(rec).
+    2. Filters records by structured_query (must_have/must_not_have emails, phones, linkedin, etc.).
+    3. Identifies exact duplicates (all field values match: company, location, person, designation, emails, phones, linkedin, dataset) and removes them.
+    4. Groups records having the SAME company name AND the EXACT SAME location (address + city + state) AND same dataset_name into a single company group with multiple contact persons.
+    5. Records with different company names OR different locations remain separate company entries.
+    """
+    if not records:
+        return []
+
+    seen_exact_signatures = set()
+    grouped_companies: List[Dict[str, Any]] = []
+    group_lookup: Dict[str, Dict[str, Any]] = {}
+
+    for rec in records:
+        fields = get_contact_fields(rec)
+        c_name = fields["company"]
+        rec_source = fields["dataset_name"]
+        p_name = ", ".join(fields["contact_persons"]) if fields["contact_persons"] else "No data available"
+        p_desig = ", ".join(fields["designations"]) if fields["designations"] else "No data available"
+        p_linkedin = ", ".join(fields["linkedin"]) if fields["linkedin"] else "No data available"
+        p_nums = fields["phones"]
+        p_emails = fields["emails"]
+        addr = fields["address"]
+        city = fields["city"]
+        state = fields["state"]
+
+        # Apply query-level contact filters if specified
+        if structured_query:
+            if structured_query.email_required is True and not p_emails:
+                continue
+            if structured_query.email_required is False and p_emails:
+                continue
+            if structured_query.phone_required is True and not p_nums:
+                continue
+            if structured_query.phone_required is False and p_nums:
+                continue
+            if structured_query.linkedin_required is True and not fields["linkedin"]:
+                continue
+            if structured_query.linkedin_required is False and fields["linkedin"]:
+                continue
+
+        # Exact duplicate check (all field values matched samely)
+        exact_sig = (
+            c_name.lower().strip(),
+            addr.lower().strip(),
+            city.lower().strip(),
+            state.lower().strip(),
+            p_name.lower().strip(),
+            p_desig.lower().strip(),
+            p_linkedin.lower().strip(),
+            ", ".join(sorted(p_emails)),
+            ", ".join(sorted(re.sub(r'\D', '', n) for n in p_nums)),
+            rec_source.lower().strip()
+        )
+        if exact_sig in seen_exact_signatures:
+            continue
+        seen_exact_signatures.add(exact_sig)
+
+        # Company + Location group key (same company name AND exact same location)
+        group_key = f"{c_name.lower().strip()}::{addr.lower().strip()}::{city.lower().strip()}::{state.lower().strip()}::{rec_source.lower().strip()}"
+
+        contact_entry = {
+            "name": p_name,
+            "designation": p_desig,
+            "linkedin": p_linkedin,
+            "phones": p_nums,
+            "emails": p_emails,
+            "address": addr if addr != "No data available" else None,
+            "city": city if city != "No data available" else None,
+            "state": state if state != "No data available" else None,
+        }
+
+        if group_key in group_lookup:
+            group_lookup[group_key]["contacts"].append(contact_entry)
+        else:
+            comp_group = {
+                "company": c_name,
+                "source_file": rec_source,
+                "dataset_name": rec_source,
+                "address": addr,
+                "city": city,
+                "state": state,
+                "contacts": [contact_entry]
+            }
+            group_lookup[group_key] = comp_group
+            grouped_companies.append(comp_group)
+
+    return grouped_companies
+
+
 def format_strict_company_records(
     records: List[Dict[str, Any]],
     structured_query: Optional[StructuredQuery] = None
 ) -> str:
     """
     STRICT RESPONSE FORMATTER for retrieved company/contact data.
+    - Groups contacts for the SAME company and EXACT SAME location under a single Company block.
+    - Keeps companies with different locations separated.
+    - Eliminates exact duplicate records where all field values match.
     """
     if not records:
         return "No data found"
 
-    from ..database import get_database_name
-    default_db_name = get_database_name()
+    # If user asked for field-only projection ('alone', 'only', 'just'), counts, or missing fields:
+    should_use_field_layout = bool(
+        structured_query and (
+            structured_query.is_only_fields
+            or structured_query.is_count_query
+            or structured_query.missing_filter
+            or (structured_query.requested_fields and not (structured_query.email_required is True or structured_query.phone_required is True or structured_query.linkedin_required is True))
+        )
+    )
+    if should_use_field_layout:
+        return format_field_specific_answer(records, structured_query)
 
-    # Group by (source_file, source_collection, database_source, norm_company_name) to preserve association
-    groups: Dict[Any, List[Dict[str, Any]]] = {}
-    group_meta: Dict[Any, Dict[str, Any]] = {}
-
-    for rec in records:
-        c_name = extract_company_name(rec)
-        norm_c = normalize_company_name(c_name) if c_name != "Not Available" else f"unknown_{id(rec)}"
-        s_file = extract_single_source_file(rec)
-        s_col = rec.get("source_collection") or rec.get("dataset")
-        s_db = rec.get("database_source") or rec.get("database") or default_db_name
-        s_sheet = rec.get("source_sheet")
-        key = (s_file, s_col, s_db, norm_c)
-        if key not in groups:
-            groups[key] = []
-            group_meta[key] = {
-                "source_file": s_file,
-                "source_collection": s_col,
-                "database_source": s_db,
-                "source_sheet": s_sheet,
-                "company_name": c_name
-            }
-        groups[key].append(rec)
-
-    formatted_groups = []
-
-    for key, group_recs in groups.items():
-        comp_display = group_meta[key]["company_name"]
-        s_file = group_meta[key]["source_file"]
-        s_col = group_meta[key]["source_collection"]
-        s_db = group_meta[key]["database_source"]
-        s_sheet = group_meta[key].get("source_sheet")
-        contacts: List[Dict[str, Any]] = []
-
-        for rec in group_recs:
-            p_info = extract_person_info(rec)
-            p_name = p_info["name"]
-            p_desig = p_info["designation"]
-            p_linkedin = extract_linkedin(rec)
-            p_nums = extract_contact_numbers(rec)
-            p_emails = extract_emails(rec)
-            p_loc = extract_location(rec)
-
-            # Match existing contact within this source group to merge duplicate records
-            matched_idx = -1
-            for i, c in enumerate(contacts):
-                if p_name and c["name"] and normalize_person_name(p_name) == normalize_person_name(c["name"]):
-                    matched_idx = i
-                    break
-                elif any(em.lower() in [e.lower() for e in c["emails"]] for em in p_emails if em):
-                    matched_idx = i
-                    break
-
-            if matched_idx >= 0:
-                existing = contacts[matched_idx]
-                if not existing["name"] and p_name:
-                    existing["name"] = p_name
-                if not existing["designation"] and p_desig:
-                    existing["designation"] = p_desig
-                if not existing.get("linkedin") and p_linkedin:
-                    existing["linkedin"] = p_linkedin
-                for num in p_nums:
-                    d_num = re.sub(r"\D", "", num)
-                    if not any(re.sub(r"\D", "", ex) == d_num for ex in existing["numbers"]):
-                        existing["numbers"].append(num)
-                for em in p_emails:
-                    if not any(ex.lower() == em.lower() for ex in existing["emails"]):
-                        existing["emails"].append(em)
-                if not existing["address"] and p_loc["address"]:
-                    existing["address"] = p_loc["address"]
-                if not existing["city"] and p_loc["city"]:
-                    existing["city"] = p_loc["city"]
-                if not existing["state"] and p_loc["state"]:
-                    existing["state"] = p_loc["state"]
-            else:
-                contacts.append({
-                    "name": p_name,
-                    "designation": p_desig,
-                    "linkedin": p_linkedin,
-                    "numbers": p_nums,
-                    "emails": p_emails,
-                    "address": p_loc["address"],
-                    "city": p_loc["city"],
-                    "state": p_loc["state"]
-                })
-
-        if structured_query:
-            if structured_query.email_required is True:
-                contacts = [c for c in contacts if c.get("emails")]
-            elif structured_query.email_required is False:
-                contacts = [c for c in contacts if not c.get("emails")]
-
-            if structured_query.phone_required is True:
-                contacts = [c for c in contacts if c.get("numbers")]
-            elif structured_query.phone_required is False:
-                contacts = [c for c in contacts if not c.get("numbers")]
-
-            if structured_query.linkedin_required is True:
-                contacts = [c for c in contacts if c.get("linkedin")]
-            elif structured_query.linkedin_required is False:
-                contacts = [c for c in contacts if not c.get("linkedin")]
-
-        if not contacts:
-            continue
-
-        comp_lines = []
-
-        # 1. Source Header:
-        if s_file:
-            if s_sheet and s_sheet != "Not Available":
-                comp_lines.append(f"Source File: {s_file} | {s_sheet}")
-            else:
-                comp_lines.append(f"Source File: {s_file}")
-            comp_lines.append("")
-        elif s_col and s_db:
-            comp_lines.append(f"Database: {s_db} | Collection: {s_col}")
-            comp_lines.append("")
-        elif s_col:
-            comp_lines.append(f"Collection: {s_col}")
-            comp_lines.append("")
-        elif s_db:
-            comp_lines.append(f"Database: {s_db}")
-            comp_lines.append("")
-
-        # 2. Company Name
-        comp_lines.append(f"Company Name: {comp_display}")
-        comp_lines.append("")
-
-        # 3. Contacts
-        for p_idx, c in enumerate(contacts, 1):
-            if p_idx > 1:
-                comp_lines.append("")
-            comp_lines.append(f"Contact Person {p_idx}:")
-            comp_lines.append(f"- Name: {c['name'] if c['name'] else 'Not Available'}")
-            comp_lines.append(f"- Designation: {c['designation'] if c['designation'] else 'Not Available'}")
-            comp_lines.append(f"- LinkedIn: {c['linkedin'] if c.get('linkedin') else 'Not Available'}")
-
-            # Contact Numbers
-            if c["numbers"]:
-                for n_idx, num in enumerate(c["numbers"], 1):
-                    comp_lines.append(f"- Contact Number {n_idx}: {num}")
-            else:
-                comp_lines.append("- Contact Number 1: Not Available")
-
-            # Emails
-            if c["emails"]:
-                for e_idx, em in enumerate(c["emails"], 1):
-                    comp_lines.append(f"- Email {e_idx}: {em}")
-            else:
-                comp_lines.append("- Email 1: Not Available")
-
-            # Location lines following Location Display Rule
-            loc_lines = format_location_lines(c, prefix="- ")
-            comp_lines.extend(loc_lines)
-
-        formatted_groups.append("\n".join(comp_lines))
-
-    if not formatted_groups:
+    grouped = group_and_deduplicate_records(records, structured_query=structured_query)
+    if not grouped:
         return "No data found"
 
-    return "\n\n\n".join(formatted_groups).strip()
+    formatted_entries = []
+
+    for comp in grouped:
+        c_name = comp["company"]
+        rec_source = comp["source_file"]
+        contacts = comp["contacts"]
+
+        entry_lines = []
+        entry_lines.append(f"Source File: {rec_source}")
+        entry_lines.append(f"Company Name: {c_name}")
+
+        for c_idx, ct in enumerate(contacts, 1):
+            entry_lines.append(f"Contact Person {c_idx}:")
+            entry_lines.append(f"- Name: {ct['name']}")
+            entry_lines.append(f"- Designation: {ct['designation']}")
+            entry_lines.append(f"- LinkedIn: {ct['linkedin']}")
+
+            if ct["phones"]:
+                for n_idx, num in enumerate(ct["phones"], 1):
+                    label = f"- Contact Number {n_idx}:" if len(ct["phones"]) > 1 or len(contacts) > 1 else "- Contact Number 1:"
+                    entry_lines.append(f"{label} {num}")
+            else:
+                entry_lines.append("- Contact Number 1: No data available")
+
+            if ct["emails"]:
+                for e_idx, em in enumerate(ct["emails"], 1):
+                    label = f"- Email {e_idx}:" if len(ct["emails"]) > 1 or len(contacts) > 1 else "- Email 1:"
+                    entry_lines.append(f"{label} {em}")
+            else:
+                entry_lines.append("- Email 1: No data available")
+
+            loc_dict = {
+                "address": ct["address"],
+                "city": ct["city"],
+                "state": ct["state"],
+            }
+            loc_lines = format_location_lines(loc_dict, prefix="- ")
+            entry_lines.extend(loc_lines)
+
+        formatted_entries.append("\n".join(entry_lines))
+
+    return "\n\n---\n\n".join(formatted_entries).strip()
 
 
 def generate_no_data_message(user_query: str, structured_query: Optional[StructuredQuery] = None) -> str:

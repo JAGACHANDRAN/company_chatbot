@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, model_validator
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Natural language search query or direct search term from user")
     dataset_id: Optional[str] = Field(None, description="Optional dataset ID to scope search to a specific uploaded dataset")
+    history: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Optional recent chat history turns")
+    explain: Optional[bool] = Field(False, description="Optional flag to return retrieval stage breakdown in meta.stages")
 
 
 class QueryCondition(BaseModel):
@@ -80,9 +82,11 @@ class ChatResponse(BaseModel):
     understood_as: Optional[List[str]] = None
     groups: Optional[List[Dict[str, Any]]] = None
     not_found: Optional[List[str]] = None
-    suggestions: Optional[Dict[str, Any]] = None
+    suggestions: Optional[Union[List[str], Dict[str, Any]]] = None
     notes: Optional[List[str]] = None
+    retrieval_mode: Optional[str] = None
     total: Optional[int] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 class DatasetUploadResponse(BaseModel):

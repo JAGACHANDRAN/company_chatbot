@@ -279,6 +279,7 @@ function FormattedFieldValue({ value }) {
     !str ||
     str.toLowerCase() === 'not available' ||
     str.toLowerCase() === 'not_available' ||
+    str.toLowerCase() === 'no data available' ||
     str.toLowerCase() === 'none' ||
     str.toLowerCase() === 'null' ||
     str.toLowerCase() === 'nan' ||
@@ -628,99 +629,434 @@ function RecordResultCard({ record, index, totalCount }) {
   );
 }
 
+function TableCellRenderer({ value, headerName }) {
+  if (!value || value === '-' || value === '--' || value.toLowerCase() === 'not available') {
+    return <span className="text-slate-400 italic text-[11px]">Not Available</span>;
+  }
+
+  // Email column or email address detected
+  if (
+    headerName.includes('email') ||
+    headerName.includes('mail') ||
+    /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/.test(value.trim())
+  ) {
+    const rawEmail = value.replace(/^\[mailto:/i, '').replace(/[\[\]]/g, '').trim();
+    return (
+      <a
+        href={`mailto:${rawEmail}`}
+        className="inline-flex items-center gap-1 text-sky-600 hover:text-sky-800 hover:underline font-medium break-all"
+        title={`Send email to ${rawEmail}`}
+      >
+        <span className="material-symbols-outlined text-[14px] text-sky-500 shrink-0">mail</span>
+        <span>{rawEmail}</span>
+      </a>
+    );
+  }
+
+  // Phone column or phone numbers
+  if (
+    headerName.includes('phone') ||
+    headerName.includes('mobile') ||
+    headerName.includes('contact no') ||
+    /^\+?[\d\s\-()]{7,}$/.test(value.trim())
+  ) {
+    const cleanTel = value.replace(/[^\d+]/g, '');
+    return (
+      <a
+        href={`tel:${cleanTel}`}
+        className="inline-flex items-center gap-1 font-mono text-[11.5px] text-slate-800 hover:text-sky-700 bg-slate-50 hover:bg-sky-50 px-2 py-0.5 rounded border border-slate-200 transition-colors whitespace-nowrap"
+        title={`Call ${value}`}
+      >
+        <span className="material-symbols-outlined text-[13px] text-slate-400 shrink-0">call</span>
+        <span>{value}</span>
+      </a>
+    );
+  }
+
+  // City or location
+  if (headerName.includes('city') || headerName.includes('location')) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-medium text-[11px] border border-slate-200/60 whitespace-nowrap">
+        <span className="material-symbols-outlined text-[13px] text-slate-400 shrink-0">location_on</span>
+        <span>{value}</span>
+      </span>
+    );
+  }
+
+  // Company column
+  if (headerName.includes('company')) {
+    return (
+      <span className="font-semibold text-slate-900 flex items-center gap-1.5">
+        <span className="material-symbols-outlined text-[15px] text-sky-600 shrink-0">apartment</span>
+        <span>{value}</span>
+      </span>
+    );
+  }
+
+  // Designation column
+  if (headerName.includes('designation') || headerName.includes('role')) {
+    return (
+      <span className="inline-flex items-center gap-1 text-slate-700 font-medium">
+        <span className="material-symbols-outlined text-[14px] text-amber-500 shrink-0">badge</span>
+        <span>{value}</span>
+      </span>
+    );
+  }
+
+  return <span>{renderInlineTokens(value)}</span>;
+}
+
+function ModernMarkdownTable({ headers, rows }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyTable = () => {
+    const tsv = [
+      headers.join('\t'),
+      ...rows.map((r) => r.join('\t'))
+    ].join('\n');
+    navigator.clipboard?.writeText(tsv);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleExportCsv = () => {
+    const escapeCsv = (str) => {
+      const s = String(str || '').replace(/"/g, '""');
+      return `"${s}"`;
+    };
+    const csv = [
+      headers.map(escapeCsv).join(','),
+      ...rows.map((r) => r.map(escapeCsv).join(','))
+    ].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    downloadBlob(blob, 'calispec_search_results.csv');
+  };
+
+  return (
+    <div className="my-3.5 rounded-2xl border border-sky-100 bg-white shadow-sm overflow-hidden transition-all hover:shadow-md w-full max-w-4xl">
+      {/* Table Header Bar */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-sky-50/80 to-slate-50 border-b border-sky-100/80">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-sky-600 text-base">table_view</span>
+          <span className="text-xs font-bold text-slate-800 uppercase tracking-wider font-headline-xl">
+            Retrieved Records ({rows.length})
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleCopyTable}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white hover:bg-sky-50 text-slate-600 hover:text-sky-700 border border-slate-200 text-xs font-medium transition-colors shadow-2xs cursor-pointer"
+            title="Copy table to clipboard"
+          >
+            <span className="material-symbols-outlined text-[13px]">{copied ? 'check' : 'content_copy'}</span>
+            <span>{copied ? 'Copied' : 'Copy'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-sky-600 hover:bg-sky-700 text-white text-xs font-medium transition-colors shadow-2xs cursor-pointer"
+            title="Export CSV"
+          >
+            <span className="material-symbols-outlined text-[13px]">file_download</span>
+            <span>CSV</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Table Container */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse text-xs">
+          <thead>
+            <tr className="bg-slate-50/90 border-b border-slate-200 text-slate-700 font-semibold tracking-wide">
+              {headers.map((h, hIdx) => (
+                <th key={hIdx} className="px-3.5 py-2.5 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[15px] text-sky-600">
+                      {getFieldIcon(h)}
+                    </span>
+                    <span>{h}</span>
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map((row, rIdx) => (
+              <tr key={rIdx} className="hover:bg-sky-50/40 transition-colors even:bg-slate-50/30">
+                {row.map((cell, cIdx) => {
+                  const headerName = (headers[cIdx] || '').toLowerCase();
+                  return (
+                    <td key={cIdx} className="px-3.5 py-2.5 align-middle text-slate-800">
+                      <TableCellRenderer value={cell} headerName={headerName} />
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function renderInlineTokens(line, lineKey = 0) {
+  if (!line) return null;
+
+  const tokenRegex =
+    /(\[([^\]]+)\]\(([^)]+)\))|((?:https?:\/\/|www\.)[^\s<>"']+)|([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)|(\*\*([^*]+)\*\*)|(`([^`]+)`)/g;
+
+  const tokens = [];
+  let lastIndex = 0;
+  let match;
+  let keyIdx = 0;
+
+  while ((match = tokenRegex.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push(line.slice(lastIndex, match.index));
+    }
+
+    if (match[1]) {
+      const label = match[2];
+      const href =
+        match[3].startsWith('http') || match[3].startsWith('mailto:') || match[3].startsWith('tel:')
+          ? match[3]
+          : `https://${match[3]}`;
+      tokens.push(
+        <a
+          key={`mlink-${lineKey}-${keyIdx++}`}
+          href={href}
+          target={href.startsWith('mailto:') || href.startsWith('tel:') ? '_self' : '_blank'}
+          rel="noopener noreferrer"
+          className="text-sky-600 underline hover:text-sky-700 break-all font-medium"
+        >
+          {label}
+        </a>
+      );
+    } else if (match[4]) {
+      const rawUrl = match[4];
+      const href = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+      tokens.push(
+        <a
+          key={`url-${lineKey}-${keyIdx++}`}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sky-600 underline hover:text-sky-700 break-all font-medium"
+        >
+          {rawUrl}
+        </a>
+      );
+    } else if (match[5]) {
+      const email = match[5];
+      tokens.push(
+        <a
+          key={`mail-${lineKey}-${keyIdx++}`}
+          href={`mailto:${email}`}
+          className="text-sky-600 underline hover:text-sky-700 break-all font-medium"
+        >
+          {email}
+        </a>
+      );
+    } else if (match[6]) {
+      tokens.push(
+        <strong key={`b-${lineKey}-${keyIdx++}`} className="font-semibold text-slate-900">
+          {match[7]}
+        </strong>
+      );
+    } else if (match[8]) {
+      tokens.push(
+        <code
+          key={`c-${lineKey}-${keyIdx++}`}
+          className="px-1.5 py-0.5 rounded bg-slate-100 font-mono text-[11px] text-sky-800 border border-slate-200"
+        >
+          {match[9]}
+        </code>
+      );
+    }
+
+    lastIndex = tokenRegex.lastIndex;
+  }
+
+  if (lastIndex < line.length) {
+    tokens.push(line.slice(lastIndex));
+  }
+
+  return tokens;
+}
+
+function parseMarkdownBlocks(text) {
+  if (!text) return [];
+  const rawLines = text.split('\n');
+  const blocks = [];
+  let i = 0;
+
+  while (i < rawLines.length) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    // Markdown table detection: current line has '|' and next line is separator '|---|---|'
+    if (trimmed.includes('|') && i + 1 < rawLines.length) {
+      const nextTrimmed = rawLines[i + 1].trim();
+      const isSep = /^\|?(\s*:?-{2,}:?\s*\|?)+$/.test(nextTrimmed) && nextTrimmed.includes('-');
+      if (isSep) {
+        const cleanHeaderLine = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+        const headers = cleanHeaderLine.split('|').map((s) => s.trim());
+        const rows = [];
+        i += 2; // skip header and separator lines
+        while (i < rawLines.length) {
+          const rowLine = rawLines[i].trim();
+          if (!rowLine || !rowLine.includes('|')) {
+            break;
+          }
+          const cleanRowLine = rowLine.replace(/^\|/, '').replace(/\|$/, '');
+          const cells = cleanRowLine.split('|').map((s) => s.trim());
+          rows.push(cells);
+          i++;
+        }
+        blocks.push({
+          type: 'table',
+          headers,
+          rows,
+        });
+        continue;
+      }
+    }
+
+    // Markdown horizontal divider rule: ---, ***, ___
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({ type: 'divider' });
+      i++;
+      continue;
+    }
+
+    // Headings: #, ##, ###, ####
+    if (/^#{1,4}\s+/.test(trimmed)) {
+      const match = trimmed.match(/^(#{1,4})\s+(.*)$/);
+      if (match) {
+        blocks.push({
+          type: 'heading',
+          level: match[1].length,
+          text: match[2].trim(),
+        });
+        i++;
+        continue;
+      }
+    }
+
+    // Bullet lists: -, *, •
+    if (/^[•\-\*]\s+/.test(trimmed)) {
+      blocks.push({
+        type: 'bullet',
+        text: trimmed.replace(/^[•\-\*]\s+/, '').trim(),
+      });
+      i++;
+      continue;
+    }
+
+    // Numbered lists: 1., 2.
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const match = trimmed.match(/^(\d+)\.\s+(.*)$/);
+      if (match) {
+        blocks.push({
+          type: 'numbered',
+          num: match[1],
+          text: match[2].trim(),
+        });
+        i++;
+        continue;
+      }
+    }
+
+    // Empty line
+    if (!trimmed) {
+      blocks.push({ type: 'empty' });
+      i++;
+      continue;
+    }
+
+    // Normal paragraph line
+    blocks.push({ type: 'paragraph', text: line });
+    i++;
+  }
+
+  return blocks;
+}
+
 /**
  * Helper to render message text with hyperlinks for URLs/emails/LinkedIn,
- * bolding for **markdown**, and dividers for ---.
+ * bolding for **markdown**, dividers for ---, and full responsive Markdown tables.
  */
 function FormattedMessageText({ text }) {
   if (!text) return null;
 
-  const lines = text.split('\n');
+  const blocks = parseMarkdownBlocks(text);
 
   return (
-    <div className="space-y-1">
-      {lines.map((line, idx) => {
-        const trimmed = line.trim();
-        if (trimmed === '---') {
+    <div className="space-y-1.5 w-full">
+      {blocks.map((block, idx) => {
+        if (block.type === 'table') {
+          return (
+            <ModernMarkdownTable
+              key={`tbl-${idx}`}
+              headers={block.headers}
+              rows={block.rows}
+            />
+          );
+        }
+
+        if (block.type === 'divider') {
           return <hr key={idx} className="my-3 border-sky-100" />;
         }
-        if (!line) {
+
+        if (block.type === 'empty') {
           return <div key={idx} className="h-1.5" />;
         }
 
-        const tokenRegex =
-          /(\[([^\]]+)\]\(([^)]+)\))|((?:https?:\/\/|www\.)[^\s<>"']+)|([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)|(\*\*([^*]+)\*\*)/g;
-
-        const tokens = [];
-        let lastIndex = 0;
-        let match;
-        let keyIdx = 0;
-
-        while ((match = tokenRegex.exec(line)) !== null) {
-          if (match.index > lastIndex) {
-            tokens.push(line.slice(lastIndex, match.index));
-          }
-
-          if (match[1]) {
-            const label = match[2];
-            const href =
-              match[3].startsWith('http') || match[3].startsWith('mailto:')
-                ? match[3]
-                : `https://${match[3]}`;
-            tokens.push(
-              <a
-                key={`mlink-${idx}-${keyIdx++}`}
-                href={href}
-                target={href.startsWith('mailto:') ? '_self' : '_blank'}
-                rel="noopener noreferrer"
-                className="text-sky-600 underline hover:text-sky-700 break-all font-medium"
-              >
-                {label}
-              </a>
-            );
-          } else if (match[4]) {
-            const rawUrl = match[4];
-            const href = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
-            tokens.push(
-              <a
-                key={`url-${idx}-${keyIdx++}`}
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sky-600 underline hover:text-sky-700 break-all font-medium"
-              >
-                {rawUrl}
-              </a>
-            );
-          } else if (match[5]) {
-            const email = match[5];
-            tokens.push(
-              <a
-                key={`mail-${idx}-${keyIdx++}`}
-                href={`mailto:${email}`}
-                className="text-sky-600 underline hover:text-sky-700 break-all font-medium"
-              >
-                {email}
-              </a>
-            );
-          } else if (match[6]) {
-            tokens.push(
-              <strong key={`b-${idx}-${keyIdx++}`} className="font-semibold text-slate-900">
-                {match[7]}
-              </strong>
+        if (block.type === 'heading') {
+          if (block.level === 1) {
+            return (
+              <h2 key={idx} className="text-base sm:text-lg font-bold text-slate-900 mt-2 mb-1">
+                {renderInlineTokens(block.text, idx)}
+              </h2>
             );
           }
-
-          lastIndex = tokenRegex.lastIndex;
+          if (block.level === 2) {
+            return (
+              <h3 key={idx} className="text-sm sm:text-base font-bold text-slate-800 mt-2 mb-1">
+                {renderInlineTokens(block.text, idx)}
+              </h3>
+            );
+          }
+          return (
+            <h4 key={idx} className="text-xs sm:text-sm font-semibold text-sky-900 mt-1.5 mb-0.5">
+              {renderInlineTokens(block.text, idx)}
+            </h4>
+          );
         }
 
-        if (lastIndex < line.length) {
-          tokens.push(line.slice(lastIndex));
+        if (block.type === 'bullet') {
+          return (
+            <div key={idx} className="flex items-start gap-2 pl-1 py-0.5 text-xs text-slate-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-500 mt-1.5 shrink-0" />
+              <div className="flex-1 leading-relaxed">{renderInlineTokens(block.text, idx)}</div>
+            </div>
+          );
+        }
+
+        if (block.type === 'numbered') {
+          return (
+            <div key={idx} className="flex items-start gap-2 pl-1 py-0.5 text-xs text-slate-700">
+              <span className="font-semibold text-sky-700 text-xs shrink-0">{block.num}.</span>
+              <div className="flex-1 leading-relaxed">{renderInlineTokens(block.text, idx)}</div>
+            </div>
+          );
         }
 
         return (
-          <div key={idx} className="leading-relaxed">
-            {tokens}
+          <div key={idx} className="leading-relaxed text-xs sm:text-[13.5px] text-slate-800">
+            {renderInlineTokens(block.text, idx)}
           </div>
         );
       })}
@@ -1587,8 +1923,11 @@ function StrictCompanyCard({ company, index, totalCount, onOpenChange }) {
                 </div>
                 <div className="space-y-1 min-w-0">
                   {contact.linkedin &&
-                  contact.linkedin !== 'Not Available' &&
-                  contact.linkedin.toLowerCase() !== 'not available' ? (
+                  !['not available', 'no data available', 'not_available', 'none', 'null', 'nan', 'n/a', 'na', '-', '--', 'undefined'].includes(
+                    String(contact.linkedin).trim().toLowerCase()
+                  ) &&
+                  !String(contact.linkedin).toLowerCase().includes('no data available') &&
+                  !String(contact.linkedin).toLowerCase().includes('not available') ? (
                     <div className="text-xs font-medium text-slate-700 min-w-0">
                       <span className="text-slate-400 text-[10px] block">Profile:</span>
                       <a
@@ -1611,7 +1950,7 @@ function StrictCompanyCard({ company, index, totalCount, onOpenChange }) {
                   ) : (
                     <div className="text-xs font-medium text-slate-700">
                       <span className="text-slate-400 text-[10px] block">Profile:</span>
-                      <span className="text-slate-400">Not Available</span>
+                      <span className="text-slate-400">{contact.linkedin || 'No data available'}</span>
                     </div>
                   )}
                 </div>
@@ -1682,110 +2021,88 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
   // Build parsed companies list with 100% accurate source file per company
   let parsedCompanies = [];
 
-  if (message.groups && Array.isArray(message.groups) && message.groups.length > 0) {
-    parsedCompanies = message.groups.map((g) => {
-      const gRecords = g.records || [];
-      const primarySource = (
-        g.source_file ||
-        gRecords[0]?.source_file ||
-        gRecords[0]?.source_filename ||
-        gRecords[0]?.['Source File'] ||
-        gRecords[0]?.dataset_name ||
-        gRecords[0]?._collection ||
-        gRecords[0]?.source_collection ||
-        message.dataset ||
-        'Database'
-      );
-      return {
-        companyName: g.company,
-        sourceFile: primarySource,
-        rawText: text,
-        contacts: gRecords.map((r, rIdx) => ({
-          title: `Contact Person ${rIdx + 1}`,
-          name: r.person || r['Person Name'] || r['Contact Person'] || r['name'] || 'Not Available',
-          designation: r.designation || r['Designation'] || r['Role'] || 'Not Available',
-          linkedin: r.linkedin || r['LinkedIn'] || r['LinkedIn URL'] || 'Not Available',
-          numbers: [r.phone, r.phone_2, r['Phone Number'], r['Mobile'], r['Contact Number']].filter(Boolean).map((p, pIdx) => ({
-            label: `Contact Number ${pIdx + 1}`,
-            val: p
-          })),
-          emails: [r.email, r.email_2, r['Email Address'], r['Mail']].filter(Boolean).map((e, eIdx) => ({
-            label: `Email ${eIdx + 1}`,
-            text: e,
-            href: `mailto:${e}`
-          })),
-          location: [r.location, r.city, r.state, r.address, r.Location, r.Address, r.City, r.State].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Not Available',
-          locations: [
-            r.location && { label: 'Location', val: r.location },
-            r.city && { label: 'City', val: r.city },
-            r.state && { label: 'State', val: r.state },
-            r.address && { label: 'Address', val: r.address }
-          ].filter(Boolean)
-        }))
+  if (message.data && Array.isArray(message.data) && message.data.length > 0) {
+    const seenExactSignatures = new Set();
+    const groupMap = new Map();
+
+    message.data.forEach((r) => {
+      const cName = r.company || r['Company Name'] || r.company_name || 'Company';
+      const pName = r.person || r['Person Name'] || r['Contact Person'] || r['name'] || 'No data available';
+      const pDesig = r.designation || r['Designation'] || r['Role'] || 'No data available';
+      const pLinkedin = r.linkedin || r['LinkedIn'] || r['LinkedIn URL'] || 'No data available';
+      const srcFile = r.source_file || r['Source File'] || r.dataset_name || r.dataset || 'Database';
+
+      const rawNums = [r.phone, r.phone_2, r['Contact Number'], r['Phone 2'], r['Mobile'], r['Contact Number 1'], r['Contact Number 2']];
+      const validNums = [];
+      const seenNums = new Set();
+      for (const n of rawNums) {
+        if (n && n !== 'No data available' && n !== 'Not Available' && !seenNums.has(n)) {
+          seenNums.add(n);
+          validNums.push(n);
+        }
+      }
+
+      const rawEmails = [r.email, r.email_2, r['Email 1'], r['Email 2'], r['Email'], r['Email Address']];
+      const validEmails = [];
+      const seenEmails = new Set();
+      for (const e of rawEmails) {
+        if (e && e !== 'No data available' && e !== 'Not Available' && !seenEmails.has(e.toLowerCase())) {
+          seenEmails.add(e.toLowerCase());
+          validEmails.push(e);
+        }
+      }
+
+      const addrVal = r.address && r.address !== 'No data available' ? r.address : '';
+      const cityVal = r.city && r.city !== 'No data available' ? r.city : '';
+      const stateVal = r.state && r.state !== 'No data available' ? r.state : '';
+      const locString = [addrVal, cityVal, stateVal].filter(Boolean).join(', ') || 'No data available';
+
+      // Exact duplicate check
+      const exactSig = `${cName.toLowerCase()}::${locString.toLowerCase()}::${pName.toLowerCase()}::${pDesig.toLowerCase()}::${pLinkedin.toLowerCase()}::${validEmails.join(',')}::${validNums.join(',')}::${srcFile.toLowerCase()}`;
+      if (seenExactSignatures.has(exactSig)) {
+        return;
+      }
+      seenExactSignatures.add(exactSig);
+
+      // Group key: same company name AND exact same location
+      const groupKey = `${cName.toLowerCase().trim()}::${locString.toLowerCase().trim()}::${srcFile.toLowerCase().trim()}`;
+
+      const contactObj = {
+        title: 'Contact Person 1',
+        name: pName,
+        designation: pDesig,
+        linkedin: pLinkedin,
+        numbers: validNums.length > 0
+          ? validNums.map((p, pIdx) => ({ label: `Contact Number ${pIdx + 1}`, val: p }))
+          : [{ label: 'Contact Number 1', val: 'No data available' }],
+        emails: validEmails.length > 0
+          ? validEmails.map((e, eIdx) => ({ label: `Email ${eIdx + 1}`, text: e, href: `mailto:${e}` }))
+          : [{ label: 'Email 1', text: 'No data available', href: null }],
+        location: locString,
+        locations: [
+          addrVal && { label: 'Address', val: addrVal },
+          cityVal && { label: 'City', val: cityVal },
+          stateVal && { label: 'State', val: stateVal }
+        ].filter(Boolean)
       };
+
+      if (groupMap.has(groupKey)) {
+        const existingComp = groupMap.get(groupKey);
+        contactObj.title = `Contact Person ${existingComp.contacts.length + 1}`;
+        existingComp.contacts.push(contactObj);
+      } else {
+        const newComp = {
+          companyName: cName,
+          sourceFile: srcFile,
+          rawText: text,
+          contacts: [contactObj]
+        };
+        groupMap.set(groupKey, newComp);
+        parsedCompanies.push(newComp);
+      }
     });
   } else if (text) {
     parsedCompanies = parseStrictCompanyText(text);
-
-    // Reconcile parsedCompanies with message.groups using strict exact matching
-    if (parsedCompanies.length > 0 && message.groups && Array.isArray(message.groups)) {
-      parsedCompanies.forEach((comp) => {
-        const normComp = (comp.companyName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const matchGroup = message.groups.find((g) => {
-          const normG = (g.company || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-          return normG === normComp;
-        });
-        if (matchGroup) {
-          const groupSource = (
-            matchGroup.source_file ||
-            matchGroup.records?.[0]?.source_file ||
-            matchGroup.records?.[0]?.source_filename ||
-            matchGroup.records?.[0]?.['Source File'] ||
-            matchGroup.records?.[0]?.dataset_name
-          );
-          if (groupSource) {
-            comp.sourceFile = groupSource;
-          }
-        }
-      });
-    }
-  } else if (message.data && Array.isArray(message.data) && message.data.length > 0) {
-    const compMap = new Map();
-    message.data.forEach((r) => {
-      const cName = r.company || r['Company Name'] || r.company_name || 'Company';
-      if (!compMap.has(cName)) {
-        compMap.set(cName, {
-          companyName: cName,
-          sourceFile: r.source_file || r.source_collection || r.dataset || 'Database',
-          rawText: text,
-          contacts: []
-        });
-      }
-      const entry = compMap.get(cName);
-      entry.contacts.push({
-        title: `Contact Person ${entry.contacts.length + 1}`,
-        name: r.person || r['Person Name'] || r['Contact Person'] || r['name'] || 'Not Available',
-        designation: r.designation || r['Designation'] || r['Role'] || 'Not Available',
-        location: [r.location, r.city, r.state, r.address, r.Location, r.Address, r.City, r.State].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Not Available',
-        linkedin: r.linkedin || r['LinkedIn'] || r['LinkedIn URL'] || 'Not Available',
-        numbers: [r.phone, r.phone_2, r['Phone Number'], r['Mobile'], r['Contact Number']].filter(Boolean).map((p, pIdx) => ({
-          label: `Contact Number ${pIdx + 1}`,
-          val: p
-        })),
-        emails: [r.email, r.email_2, r['Email Address'], r['Mail']].filter(Boolean).map((e, eIdx) => ({
-          label: `Email ${eIdx + 1}`,
-          text: e,
-          href: `mailto:${e}`
-        })),
-        locations: [
-          r.location && { label: 'Location', val: r.location },
-          r.city && { label: 'City', val: r.city },
-          r.state && { label: 'State', val: r.state },
-          r.address && { label: 'Address', val: r.address }
-        ].filter(Boolean)
-      });
-    });
-    parsedCompanies = Array.from(compMap.values());
   }
 
   return (

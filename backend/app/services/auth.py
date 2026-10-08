@@ -253,6 +253,89 @@ def create_user(email: str, password: str, role: str = ROLE_CHAT_USER) -> dict:
     }
 
 
+def get_or_create_google_user(google_info: dict) -> dict:
+    """
+    Finds existing user by email or creates a new user from verified Google OAuth profile data.
+    Preserves existing roles and links Google profile metadata.
+    """
+    raw_email = google_info.get("email", "")
+    if not raw_email:
+        raise ValueError("Google profile did not provide an email address.")
+    
+    clean_email = raw_email.strip().lower()
+    google_id = google_info.get("sub", "")
+    name = google_info.get("name", "")
+    picture = google_info.get("picture", "")
+    now_iso = datetime.utcnow().isoformat() + "Z"
+
+    db = get_database()
+    user_col = db[USERS_COLLECTION]
+
+    # Check if this email matches the configured uploader email from .env
+    uploader_env_email = os.getenv("UPLOADER_EMAIL", "").strip().lower()
+    is_env_uploader = bool(uploader_env_email and clean_email == uploader_env_email)
+
+    existing = user_col.find_one({"email": clean_email})
+
+    if existing:
+        user_id = existing.get("user_id") or f"usr_{uuid.uuid4().hex[:10]}"
+        user_role = existing.get("role", ROLE_DATA_UPLOADER if is_env_uploader else ROLE_CHAT_USER)
+        
+        update_fields: Dict[str, Any] = {
+            "last_login": now_iso,
+            "last_auth_provider": "google"
+        }
+        if google_id and not existing.get("google_id"):
+            update_fields["google_id"] = google_id
+        if picture and not existing.get("picture"):
+            update_fields["picture"] = picture
+        if name and not existing.get("name"):
+            update_fields["name"] = name
+        if is_env_uploader and user_role != ROLE_DATA_UPLOADER:
+            update_fields["role"] = ROLE_DATA_UPLOADER
+            user_role = ROLE_DATA_UPLOADER
+
+        user_col.update_one(
+            {"email": clean_email},
+            {"$set": update_fields}
+        )
+
+        return {
+            "user_id": user_id,
+            "email": clean_email,
+            "role": user_role,
+            "name": existing.get("name") or name,
+            "picture": existing.get("picture") or picture
+        }
+    else:
+        # Create a new user record in the MongoDB users collection
+        new_user_id = f"usr_{uuid.uuid4().hex[:10]}"
+        assigned_role = ROLE_DATA_UPLOADER if is_env_uploader else ROLE_CHAT_USER
+        
+        new_user_doc = {
+            "user_id": new_user_id,
+            "email": clean_email,
+            "name": name,
+            "picture": picture,
+            "google_id": google_id,
+            "role": assigned_role,
+            "user_type": "uploader" if assigned_role == ROLE_DATA_UPLOADER else "chat_user",
+            "auth_provider": "google",
+            "created_at": now_iso,
+            "last_login": now_iso
+        }
+        user_col.insert_one(new_user_doc)
+
+        return {
+            "user_id": new_user_id,
+            "email": clean_email,
+            "role": assigned_role,
+            "name": name,
+            "picture": picture
+        }
+
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme)
 ) -> dict:

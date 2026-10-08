@@ -1,16 +1,23 @@
+"""
+Query Router Service for Hybrid RAG.
+Classifies user search intents and decides the execution plan:
+1. Exact lookups (Phone, Email, Exact Person/Company name) -> Lexical only (No LLM call, direct cards).
+2. Descriptive or semantic queries -> Hybrid (Vector Search + Lexical Search in parallel, RRF merged).
+"""
+import re
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
-from ..config import PRIVACY_MODE
 from .query_understanding import StructuredQuery
 
 
 class SearchPlan(BaseModel):
     search_strategy: str = Field(
         ...,
-        description="Strategy: exact_entity, multi_value_structured, location_filter, person_search, designation_department, semantic_vector, hybrid, combined"
+        description="Strategy: exact_lookup, exact_entity, multi_value_structured, location_filter, person_search, designation_department, semantic_vector, hybrid"
     )
     use_structured: bool = True
-    use_vector: bool = False
+    use_vector: bool = True
+    requires_llm: bool = True
     structured_filters: Dict[str, Any] = Field(default_factory=dict)
     companies: List[str] = Field(default_factory=list)
     people: List[str] = Field(default_factory=list)
@@ -24,24 +31,38 @@ class SearchPlan(BaseModel):
     description: str = ""
 
 
-def route_query(
-    structured_query: StructuredQuery,
-    privacy_mode: Optional[bool] = None
-) -> SearchPlan:
-    """
-    Decides the optimal retrieval strategy based on the structured query:
-    - exact_entity: single company exact entity lookup (use_vector=False)
-    - multi_value_structured: multiple companies searched independently (use_vector=False)
-    - location_filter: structured location filter (use_vector=False)
-    - person_search: exact/controlled person search (use_vector=False)
-    - hybrid: structured filters as HARD constraints + semantic assistance
-    - semantic_vector: broad conceptual/semantic inquiry (use_vector=True if privacy_mode=False)
+PHONE_REGEX = re.compile(r"(\+?\d[\d\s-]{6,15}\d)")
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 
-    When PRIVACY_MODE is true:
-    - Vector search is strictly disabled (use_vector=False) across all strategies.
-    - System relies on structured regex and MongoDB text-index matching.
+
+def is_exact_lookup_query(structured_query: StructuredQuery) -> bool:
     """
-    is_privacy = PRIVACY_MODE if privacy_mode is None else privacy_mode
+    Identifies if a query is a direct lookup for phone, email, or exact entity
+    where results should be served directly from MongoDB without calling the cloud LLM.
+    """
+    orig = structured_query.original_query.strip()
+    
+    # Check for direct phone number or email string
+    if PHONE_REGEX.search(orig) and not any(kw in orig.lower() for kw in ("how", "why", "compare", "summary", "list")):
+        return True
+    if EMAIL_REGEX.search(orig):
+        return True
+
+    # Check for exact single person name lookup (e.g. "Ravi Kumar", "Find Rajesh")
+    if structured_query.people and len(structured_query.people) == 1 and not structured_query.designation and not structured_query.semantic_query:
+        words = orig.split()
+        if len(words) <= 4 and any(kw in orig.lower() for kw in ("who is", "contact for", "find", "lookup", "phone of", "email of")):
+            return True
+
+    return False
+
+
+def route_query(structured_query: StructuredQuery) -> SearchPlan:
+    """
+    Routes the structured query to the optimal execution plan:
+    - Exact Phone/Email/Entity -> Lexical only (requires_llm=False)
+    - Semantic / Descriptive / Hybrid -> Vector + Lexical (requires_llm=True)
+    """
     comps = structured_query.companies
     people = structured_query.people
     desig = structured_query.designation
@@ -50,141 +71,84 @@ def route_query(
     city = structured_query.city
     country = structured_query.country
     loc = structured_query.location
-    has_loc = bool(state or city or country or loc)
-    sem = structured_query.semantic_query
+    orig_lower = structured_query.original_query.lower()
 
     structured_filters: Dict[str, Any] = {}
-    if comps:
-        structured_filters["companies"] = comps
-    if people:
-        structured_filters["people"] = people
-    if desig:
-        structured_filters["designation"] = desig
-    if dept:
-        structured_filters["department"] = dept
-    if state:
-        structured_filters["state"] = state
-    if city:
-        structured_filters["city"] = city
-    if country:
-        structured_filters["country"] = country
-    if loc:
-        structured_filters["location"] = loc
+    if comps: structured_filters["companies"] = comps
+    if people: structured_filters["people"] = people
+    if desig: structured_filters["designation"] = desig
+    if dept: structured_filters["department"] = dept
+    if state: structured_filters["state"] = state
+    if city: structured_filters["city"] = city
+    if country: structured_filters["country"] = country
+    if loc: structured_filters["location"] = loc
 
-    orig_lower = structured_query.original_query.lower()
-    has_semantic_intent = bool(
-        "responsible for" in orig_lower
-        or "who handles" in orig_lower
-        or "matching this description" in orig_lower
-        or "how to" in orig_lower
-        or "describe" in orig_lower
-        or "procedure" in orig_lower
-        or "overview" in orig_lower
-    )
+    # 1. Exact Phone / Email / Direct Lookup
+    if is_exact_lookup_query(structured_query):
+        strategy = "person_search" if people and not (comps or desig or dept) else "exact_lookup"
+        return SearchPlan(
+            search_strategy=strategy,
+            use_structured=True,
+            use_vector=False,
+            requires_llm=False,
+            structured_filters=structured_filters,
+            companies=comps,
+            people=people,
+            city=city,
+            description="Exact phone/email/person lookup. Database direct answer without LLM call."
+        )
 
-    # 1. Multi-company explicit query: e.g. "Find ABC, TVS and 2D INC", "ABC, TVS and XYZ"
-    if len(comps) > 1 and not has_semantic_intent:
+    # 2. Multi-company exact query
+    if len(comps) > 1 and not any(kw in orig_lower for kw in ("best", "describe", "recommend", "summary", "compare")):
         return SearchPlan(
             search_strategy="multi_value_structured",
             use_structured=True,
             use_vector=False,
+            requires_llm=False,
             structured_filters=structured_filters,
             companies=comps,
-            description="Multi-company exact entity lookup. Independent entity search for each requested company."
+            description="Multi-company exact entity lookup."
         )
 
-    # 2. Single Exact Company Query: e.g. "2D INC", "TVS", "ABC Industries", "Find TVS"
-    if comps and not has_semantic_intent and not (desig or dept):
+    # 3. Company entity search (e.g. "TVS", "show TVS companies", "companies related to TVS")
+    if comps and not (desig or dept or city or state):
+        is_analytical = any(kw in orig_lower for kw in ("best", "describe", "recommend", "summary", "compare", "why", "how", "explain", "overview"))
         return SearchPlan(
             search_strategy="exact_entity",
             use_structured=True,
-            use_vector=False,
+            use_vector=True,
+            requires_llm=is_analytical,
             structured_filters=structured_filters,
             companies=comps,
-            state=state,
-            city=city,
-            location=loc,
-            description="Exact company entity retrieval without vector pollution."
+            description="Company entity search with hybrid retrieval."
         )
 
-    # 3. Person Name Query: e.g. "Find Ravi Kumar", "Ravi Kumar"
-    if people and not has_semantic_intent and not (comps or desig or dept):
-        return SearchPlan(
-            search_strategy="person_search",
-            use_structured=True,
-            use_vector=False,
-            structured_filters=structured_filters,
-            people=people,
-            description="Exact/controlled person entity search."
-        )
-
-    # 4. Pure Location Filter Query: e.g. "Companies in Tamil Nadu", "Which companies are in Chennai?"
-    if has_loc and not (comps or people or desig or dept or has_semantic_intent):
+    # 4. Pure location query (e.g. "Companies in Chennai")
+    if (city or state) and not (comps or people or desig) and any(w in orig_lower for w in ("in", "at", "companies in", "list")):
         return SearchPlan(
             search_strategy="location_filter",
             use_structured=True,
-            use_vector=False,
+            use_vector=True,
+            requires_llm=True,
             structured_filters=structured_filters,
-            state=state,
             city=city,
-            country=country,
-            location=loc,
-            description="Structured location filter across all database records."
-        )
-
-    # 5. Hybrid Query: structured constraints (role, department, location, company) + semantic matching
-    # e.g. "Quality managers in Tamil Nadu"
-    if (desig or dept) and (has_loc or comps) and not has_semantic_intent:
-        return SearchPlan(
-            search_strategy="hybrid",
-            use_structured=True,
-            use_vector=False if is_privacy else True,
-            structured_filters=structured_filters,
-            companies=comps,
-            people=people,
-            designation=desig,
-            department=dept,
             state=state,
-            city=city,
-            country=country,
-            location=loc,
-            semantic_query=desig or dept or structured_query.original_query,
-            description="Hybrid query: structured filters as HARD constraints with regex/text-index search (PRIVACY_MODE)" if is_privacy else "Hybrid query: structured filters as HARD constraints with semantic assistance."
+            description="Location-scoped hybrid search."
         )
 
-    # 6. Designation / Department only: e.g. "Show quality managers"
-    if (desig or dept) and not (comps or people or has_loc or has_semantic_intent):
-        return SearchPlan(
-            search_strategy="designation_department",
-            use_structured=True,
-            use_vector=False if is_privacy else True,
-            structured_filters=structured_filters,
-            designation=desig,
-            department=dept,
-            semantic_query=desig or dept or "",
-            description="Role/department structured filter with regex/text-index search (PRIVACY_MODE)" if is_privacy else "Role/department structured filter with semantic role matching."
-        )
-
-    # 7. Pure Semantic Query: e.g. "Who is responsible for quality operations?"
-    if has_semantic_intent or (sem and not (comps or people or has_loc)):
-        return SearchPlan(
-            search_strategy="semantic_vector",
-            use_structured=True if is_privacy else bool(dept or desig),
-            use_vector=False if is_privacy else True,
-            structured_filters=structured_filters,
-            department=dept,
-            designation=desig,
-            semantic_query=sem or structured_query.original_query,
-            description="PRIVACY_MODE: vector search skipped; using regex and MongoDB text-index search." if is_privacy else "Semantic vector retrieval for conceptual or descriptive inquiry."
-        )
-
-    # Fallback to controlled entity search
+    # 5. Default Hybrid strategy for descriptive or semantic questions
     return SearchPlan(
-        search_strategy="exact_entity",
+        search_strategy="hybrid",
         use_structured=True,
-        use_vector=False,
+        use_vector=True,
+        requires_llm=True,
         structured_filters=structured_filters,
         companies=comps,
         people=people,
-        description="Controlled entity structured search."
+        designation=desig,
+        department=dept,
+        city=city,
+        state=state,
+        semantic_query=structured_query.semantic_query or structured_query.original_query,
+        description="Hybrid RAG: Parallel Vector ($vectorSearch) + Lexical search merged via RRF (k=60)."
     )

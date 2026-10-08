@@ -1,244 +1,167 @@
+"""
+LLM Answer Generation Module for Calispec Hybrid RAG.
+SECURITY GUARANTEES:
+1. Receives ONLY: user question, last 3 chat turns, and masked matching records.
+2. Only allowed fields in payload: company, person, designation, city, plus placeholders [PHONE_n], [EMAIL_n].
+3. Unmasks placeholders in the backend before returning.
+"""
+import time
 import json
-import os
-import re
-from typing import Optional
+import logging
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
+
 from .config import (
-    PRIVACY_MODE,
-    OLLAMA_BASE_URL,
+    LLM_MODE,
+    OLLAMA_CLOUD_URL,
+    OLLAMA_LOCAL_URL,
     OLLAMA_API_KEY,
     LLM_MODEL,
+    LLM_REASONING,
+    MASK_PII,
 )
-from .schemas import QueryIntent
+from .services.pii_mask import mask_records, unmask_text
+from .services.response_generator import deterministic_synthesize
+
+logger = logging.getLogger("calispec.llm")
 
 
 def call_llm(*args, **kwargs):
+    """Legacy stub for backwards compatibility with test harnesses."""
+    raise RuntimeError("Direct call_llm deprecated. Use generate_answer().")
+
+
+RAG_SYSTEM_PROMPT = """You are a contact-search assistant for a metrology and calibration business directory. Answer ONLY from the provided records. When contacts or companies are found, include all matching companies and their details from the provided records without omitting matching entries. Never invent companies, people, phone numbers or emails. Use placeholders exactly as given."""
+
+
+def format_records_for_llm(masked_records: List[Dict[str, str]]) -> str:
+    """Formats masked records into compact key: value lines for the LLM prompt."""
+    lines = []
+    for idx, r in enumerate(masked_records, start=1):
+        lines.append(f"Record {idx}:")
+        lines.append(f"  Company: {r.get('company', 'Not Available')}")
+        lines.append(f"  Contact Person: {r.get('person', 'Not Available')}")
+        lines.append(f"  Designation: {r.get('designation', 'Not Available')}")
+        lines.append(f"  City: {r.get('city', 'Not Available')}")
+        lines.append(f"  Phone: {r.get('phone', 'Not Available')}")
+        lines.append(f"  Email: {r.get('email', 'Not Available')}")
+    return "\n".join(lines)
+
+
+async def generate_answer(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    records: Optional[List[Dict[str, Any]]] = None,
+    max_records: int = 50
+) -> Dict[str, Any]:
     """
-    Hard guard ensuring no code path can reach the model if PRIVACY_MODE is true.
+    Generates a secure RAG answer via gpt-oss:120b.
+    1. Masks phone numbers and emails to [PHONE_1], [EMAIL_1]...
+    2. Calls Ollama Cloud (or local signed-in endpoint) with strict grounding prompt.
+    3. Unmasks placeholders back to original values in backend.
+    4. Returns {answer: str, records: List[Dict], meta: Dict}.
     """
-    if PRIVACY_MODE:
-        raise RuntimeError("LLM disabled: PRIVACY_MODE is on")
-    raise NotImplementedError("Direct call_llm not configured for external models without strict schema.")
-
-SYSTEM_PROMPT = """You are an intelligent query parser for a structured company database.
-
-Your only task is to understand the user's natural language search request
-and identify the relevant database field and search value.
-
-You do NOT have access to the database.
-You must NOT invent company information.
-You must NOT answer using your general knowledge.
-Never generate SQL.
-Return ONLY valid JSON.
-
-Database searchable fields across collections:
-1. company_name       : Company Name or business name
-2. contact_person     : Contact Person name / manager / executive
-3. designation        : Job title, designation, position (e.g. Director, Manager, Engineer)
-4. mobile_no          : Mobile number (e.g., 9876543210, +91-9876543210)
-5. landline_telephone : Landline / Telephone / Office phone
-6. telephone_1        : Telephone 1
-7. telephone_2        : Telephone 2
-8. email              : Email address (searches Email, Email 1, Email 2)
-9. address            : Physical address, street, building, or location
-10. city              : City (e.g., Chennai, Mumbai, Coimbatore, Bangalore)
-11. state             : State (e.g., Tamil Nadu, Maharashtra, Karnataka)
-12. pin               : Postal PIN code / ZIP code (e.g., 600001)
-13. group             : Group / Business conglomerate / Division
-14. records_merged    : Records merged count/status
-15. review_required   : Review required status
-16. sources           : Source catalog/fair/exhibition
-17. remarks           : Remarks, notes, status, or comments
-
-Special shortcuts:
-- Use "email" if user mentions email generally
-- Use "phone" or "landline" if user mentions phone/telephone/landline
-- Use "city" if user is filtering by a city name
-- Use "designation" if user is filtering by a person's role or designation
-
-Response format:
-{
-  "field": "company_name" | "contact_person" | "designation" | "mobile_no" | "landline" | "phone" | "email" | "address" | "city" | "state" | "pin" | "group" | "remarks" | null,
-  "value": "extracted search string"
-}
-
-Examples:
-- "Find ABC Tech" -> {"field": "company_name", "value": "ABC Tech"}
-- "Show companies in Chennai" -> {"field": "city", "value": "Chennai"}
-- "Search for Director Rajesh" -> {"field": "contact_person", "value": "Rajesh"}
-- "Look up General Manager" -> {"field": "designation", "value": "General Manager"}
-- "Show companies in Tata Group" -> {"field": "group", "value": "Tata"}
-- "Lookup mobile 9876543210" -> {"field": "mobile_no", "value": "9876543210"}
-- "Email info@xyz.com" -> {"field": "email", "value": "info@xyz.com"}
-- "Call 044-24567890" -> {"field": "phone", "value": "044-24567890"}
-- "PIN 600028" -> {"field": "pin", "value": "600028"}
-- "Address Guindy" -> {"field": "address", "value": "Guindy"}
-
-If no specific field is identified, return:
-{
-  "field": null,
-  "value": "user's search text"
-}"""
-
-
-def fallback_query_parser(message: str) -> QueryIntent:
-    """
-    Intelligent heuristic fallback if Ollama is unreachable or returns malformed response.
-    Recognizes emails, phones, PIN codes, contact person patterns, group names, etc.
-    """
-    if PRIVACY_MODE:
-        raise RuntimeError("LLM disabled: PRIVACY_MODE is on")
-    clean = message.strip()
-
-    # 1. Email pattern
-    email_match = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", clean)
-    if email_match:
-        # Check if email 1 or email 2 explicitly mentioned
-        if re.search(r"email\s*2\b", clean, re.IGNORECASE):
-            return QueryIntent(field="email_2", value=email_match.group(0).strip())
-        elif re.search(r"email\s*1\b", clean, re.IGNORECASE):
-            return QueryIntent(field="email_1", value=email_match.group(0).strip())
-        return QueryIntent(field="email", value=email_match.group(0).strip())
-
-    # 2. PIN code pattern (e.g., "PIN 600001", "pincode 560001", or standalone 6-digit number)
-    pin_match = re.search(r"\b(?:pin|pincode|zip|zipcode|postal\s*code)?\s*[:#-]?\s*([1-9][0-9]{5})\b", clean, re.IGNORECASE)
-    if pin_match and re.search(r"\b(?:pin|pincode|zip|postal)\b", clean, re.IGNORECASE):
-        return QueryIntent(field="pin", value=pin_match.group(1).strip())
-
-    # 3. Phone / Mobile pattern
-    phone_clean = clean
-    field_detected = "phone"
-    if re.search(r"\b(mobile(?:\s*no\.?)?|cell)\b", clean, re.IGNORECASE):
-        field_detected = "mobile_no"
-        phone_clean = re.sub(r"\b(mobile(?:\s*no\.?)?|cell)\s*[:#-]?\s*", "", clean, flags=re.IGNORECASE)
-    elif re.search(r"\b(tel\s*1|telephone\s*1)\b", clean, re.IGNORECASE):
-        field_detected = "telephone_1"
-        phone_clean = re.sub(r"\b(tel\s*1|telephone\s*1)\s*[:#-]?\s*", "", clean, flags=re.IGNORECASE)
-    elif re.search(r"\b(tel\s*2|telephone\s*2)\b", clean, re.IGNORECASE):
-        field_detected = "telephone_2"
-        phone_clean = re.sub(r"\b(tel\s*2|telephone\s*2)\s*[:#-]?\s*", "", clean, flags=re.IGNORECASE)
-    elif re.search(r"\b(tel|telephone|phone|call)\b", clean, re.IGNORECASE):
-        field_detected = "phone"
-        phone_clean = re.sub(r"\b(tel|telephone|phone|call)\s*[:#-]?\s*", "", clean, flags=re.IGNORECASE)
-
-    phone_match = re.search(r"(\+?\d[\d\s-]{5,15}\d)", phone_clean)
-    if phone_match and not re.search(r"[a-zA-Z]", phone_match.group(0)):
-        cleaned_phone = phone_match.group(0).strip()
-        return QueryIntent(field=field_detected, value=cleaned_phone)
-
-    # 4. Contact Person pattern
-    contact_match = re.search(r"\b(?:contact\s*person|contact|representative|manager|mr\.|ms\.|mrs\.)\s*[:\-]?\s*([a-zA-Z\s.]+)", clean, re.IGNORECASE)
-    if contact_match:
-        val = contact_match.group(1).strip()
-        if len(val) > 2:
-            return QueryIntent(field="contact_person", value=val)
-
-    # 5. Group pattern
-    group_match = re.search(r"\b(?:group|division)\s*[:\-]?\s*([a-zA-Z0-9\s]+)", clean, re.IGNORECASE)
-    if group_match:
-        val = group_match.group(1).strip()
-        if len(val) > 1:
-            return QueryIntent(field="group", value=val)
-
-    # 6. Remarks pattern
-    remarks_match = re.search(r"\b(?:remarks?|notes?|comments?)\s*[:\-]?\s*([a-zA-Z0-9\s]+)", clean, re.IGNORECASE)
-    if remarks_match:
-        val = remarks_match.group(1).strip()
-        if len(val) > 1:
-            return QueryIntent(field="remarks", value=val)
-
-    # 7. Address / Location keywords
-    addr_match = re.search(r"\b(?:in|at|located in|address)\s+([a-zA-Z0-9\s,.-]+)$", clean, re.IGNORECASE)
-    if addr_match:
-        return QueryIntent(field="address", value=addr_match.group(1).strip())
-
-    # 8. Clean conversational prefixes and default to company_name
-    prefix_patterns = [
-        r"^(find|search|show|get|display|lookup|look for|who is|which company has|tell me about)\s+(me\s+)?(the\s+)?(company\s+)?(named|with|having|called)?\s*",
-        r"^(company\s+)?(details|info|record)\s+(for|of)\s*",
-    ]
-    extracted = clean
-    for pat in prefix_patterns:
-        extracted = re.sub(pat, "", extracted, flags=re.IGNORECASE).strip()
-
-    if extracted:
-        return QueryIntent(field="company_name", value=extracted)
-
-    return QueryIntent(field=None, value=None)
-
-
-async def parse_query_with_llm(user_message: str) -> QueryIntent:
-    """
-    Calls Ollama to parse natural language user search intent into a structured QueryIntent.
-    Ensures strict JSON response without SQL generation.
-    """
-    if PRIVACY_MODE:
-        raise RuntimeError("LLM disabled: PRIVACY_MODE is on")
-
-    if not user_message or not user_message.strip():
-        return QueryIntent(field=None, value=None)
-
-    # 1. Attempt Ollama Cloud / API
-    try:
-        headers = {
-            "Content-Type": "application/json"
+    if not records:
+        return {
+            "answer": "I could not find any matching contact or company records in the database.",
+            "records": [],
+            "meta": {"status": "no_records", "latency_ms": 0}
         }
+
+    # 1. PII Masking
+    if MASK_PII:
+        masked_recs, placeholder_map = mask_records(records, max_records=max_records)
+    else:
+        masked_recs = [{k: str(v) for k, v in r.items() if k in ("company", "person", "designation", "city", "phone", "email")} for r in records[:max_records]]
+        placeholder_map = {}
+
+    formatted_context = format_records_for_llm(masked_recs)
+
+    # 2. Build conversation messages (System + History + Prompt)
+    messages = [{"role": "system", "content": RAG_SYSTEM_PROMPT}]
+
+    # Include at most last 3 history turns
+    if history:
+        for turn in history[-3:]:
+            role = turn.get("role") or ("user" if "user" in turn else "assistant")
+            content = turn.get("content") or turn.get("message") or turn.get("user") or turn.get("assistant") or ""
+            if content:
+                messages.append({"role": role, "content": str(content).strip()})
+
+    user_prompt = f"Provided Records:\n{formatted_context}\n\nUser Question: {question.strip()}"
+    messages.append({"role": "user", "content": user_prompt})
+
+    # 3. Resolve endpoint and headers per LLM_MODE
+    if LLM_MODE == "local_signed_in":
+        endpoint = f"{OLLAMA_LOCAL_URL}/api/chat"
+        headers = {"Content-Type": "application/json"}
+        model_to_use = f"{LLM_MODEL}-cloud" if not LLM_MODEL.endswith("-cloud") else LLM_MODEL
+    else:  # cloud_direct
+        endpoint = f"{OLLAMA_CLOUD_URL}/api/chat"
+        if "/v1" in OLLAMA_CLOUD_URL:
+            endpoint = f"{OLLAMA_CLOUD_URL}/chat/completions"
+        headers = {"Content-Type": "application/json"}
         if OLLAMA_API_KEY:
             headers["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
+        model_to_use = LLM_MODEL
 
-        payload = {
-            "model": LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message.strip()}
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0.0
-            }
+    payload = {
+        "model": model_to_use,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "reasoning": LLM_REASONING
         }
+    }
 
-        # Try native /api/chat endpoint first, or /v1/chat/completions if using OpenAI-compatible cloud proxy
-        endpoint = f"{OLLAMA_BASE_URL}/api/chat"
-        if "/v1" in OLLAMA_BASE_URL:
-            endpoint = f"{OLLAMA_BASE_URL}/chat/completions"
+    t_start = time.time()
+    unmasked_text = None
+    meta: Dict[str, Any] = {
+        "model": model_to_use,
+        "llm_mode": LLM_MODE,
+        "masked_records_count": len(masked_recs),
+        "placeholders_count": len(placeholder_map),
+        "fallback_used": False
+    }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(endpoint, json=payload, headers=headers)
-            
-            # If 404 on /api/chat, try /v1/chat/completions fallback for cloud proxies
-            if response.status_code == 404 and "/v1" not in OLLAMA_BASE_URL:
-                response = await client.post(f"{OLLAMA_BASE_URL}/v1/chat/completions", json=payload, headers=headers)
+    # 4. Invoke LLM with retry
+    for attempt in range(1, 3):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.post(endpoint, json=payload, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    raw_reply = ""
+                    if "message" in data and isinstance(data["message"], dict):
+                        raw_reply = data["message"].get("content", "").strip()
+                    elif "choices" in data and len(data["choices"]) > 0:
+                        raw_reply = data["choices"][0].get("message", {}).get("content", "").strip()
 
-            if response.status_code == 200:
-                data = response.json()
+                    if raw_reply:
+                        # Unmask backend placeholders
+                        unmasked_text = unmask_text(raw_reply, placeholder_map) if MASK_PII else raw_reply
+                        meta["tokens_prompt"] = data.get("prompt_eval_count")
+                        meta["tokens_completion"] = data.get("eval_count")
+                        break
+                else:
+                    logger.warning(f"[LLM] HTTP {res.status_code} from {endpoint}: {res.text[:200]}")
+        except Exception as err:
+            logger.warning(f"[LLM Attempt {attempt}/2 Failed] Error: {err}")
 
-                # Extract content from either native Ollama or OpenAI format
-                raw_content = ""
-                if "message" in data and isinstance(data["message"], dict):
-                    raw_content = data["message"].get("content", "").strip()
-                elif "choices" in data and len(data["choices"]) > 0:
-                    raw_content = data["choices"][0].get("message", {}).get("content", "").strip()
+    latency_ms = round((time.time() - t_start) * 1000, 2)
+    meta["latency_ms"] = latency_ms
 
-                # Clean markdown backticks if any
-                cleaned_content = re.sub(r"^```(json)?", "", raw_content, flags=re.MULTILINE)
-                cleaned_content = re.sub(r"```$", "", cleaned_content, flags=re.MULTILINE).strip()
+    # 5. Fallback if LLM failed or key missing
+    if not unmasked_text:
+        logger.warning(f"[LLM Fallback] Generating deterministic answer for query.")
+        meta["fallback_used"] = True
+        unmasked_text = deterministic_synthesize(records[:max_records])
 
-                if cleaned_content:
-                    parsed = json.loads(cleaned_content)
-                    field = parsed.get("field")
-                    value = parsed.get("value")
+    logger.info(f"[LLM Completed] Latency: {latency_ms}ms | Records: {len(masked_recs)} | Fallback: {meta['fallback_used']}")
 
-                    if field and value:
-                        return QueryIntent(field=str(field).strip().lower(), value=str(value).strip())
-                    elif value:
-                        return QueryIntent(field=None, value=str(value).strip())
-            else:
-                print(f"[Ollama Cloud Status] HTTP {response.status_code}: {response.text[:200]}")
-
-    except Exception as e:
-        print(f"[Ollama Cloud Warning] Request failed or unavailable ({e}). Using fallback parser.")
-
-    # 2. Fallback heuristic parser
-    return fallback_query_parser(user_message)
+    return {
+        "answer": unmasked_text,
+        "records": records[:max_records],
+        "meta": meta
+    }

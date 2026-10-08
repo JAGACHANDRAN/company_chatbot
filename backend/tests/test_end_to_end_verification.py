@@ -80,7 +80,7 @@ def test_case_a_keyword_search():
     assert len(matched) == 1
     assert matched[0]["person_name"] == "Babu John"
     ans = generate_deterministic_answer(q, sq, matched)
-    assert "Source File: Vendor_List_2026.xlsx | Sheet1" in ans
+    assert "Source File: Vendor_List_2026.xlsx" in ans
     assert "Babu John" in ans
     assert "+91 9876543210" in ans
 

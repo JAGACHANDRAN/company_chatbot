@@ -18,15 +18,113 @@ Supports multiple collections (e.g., all 6 collections configured in backend/.en
 
 import os
 import sys
+import time
 from dotenv import load_dotenv
 from pymongo import MongoClient, ASCENDING, TEXT
+from pymongo.operations import SearchIndexModel
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 load_dotenv()
 
 MONGODB_URI = os.getenv("MONGODB_URI", os.getenv("DATABASE_URL", "")).strip()
 DB_NAME = os.getenv("MONGODB_DB_NAME", "calispec").strip()
 MONGODB_COLLECTIONS_RAW = os.getenv("MONGODB_COLLECTIONS", os.getenv("MONGODB_COLLECTION_NAMES", "")).strip()
-DEFAULT_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "metrology").strip()
+DEFAULT_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "dataset_records").strip()
+VECTOR_INDEX_NAME = os.getenv("VECTOR_INDEX_NAME", "vector_index").strip()
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
+
+
+def setup_vector_search_index(collection, index_name: str = VECTOR_INDEX_NAME, dim: int = EMBEDDING_DIM):
+    """
+    Drops any existing index named `index_name` and creates a vectorSearch index
+    with 768 dimensions and cosine similarity, plus filter fields.
+    Polls until status is READY / queryable.
+    """
+    col_name = collection.name
+    print(f"\n🔍 Configuring Atlas Vector Search Index on '{col_name}'...")
+    print(f"  - Index Name    : {index_name}")
+    print(f"  - Dimensions    : {dim}")
+    print(f"  - Similarity    : cosine")
+    print(f"  - Filter Fields : city, company, dataset_id")
+
+    # 1. Check existing search indexes and drop if exists
+    try:
+        existing_indexes = list(collection.list_search_indexes())
+        for idx in existing_indexes:
+            if idx.get("name") == index_name:
+                print(f"  Found existing search index '{index_name}' (status: {idx.get('status', 'unknown')}). Dropping it...")
+                try:
+                    collection.drop_search_index(index_name)
+                    print(f"  ✓ Dropped existing index '{index_name}'.")
+                    time.sleep(3)
+                except Exception as drop_err:
+                    print(f"  ⚠️ Notice while dropping index: {drop_err}")
+    except Exception as list_err:
+        print(f"  ⚠️ Could not list search indexes via driver: {list_err}")
+
+    # 2. Create the SearchIndexModel
+    definition = {
+        "fields": [
+            {
+                "type": "vector",
+                "path": "embedding",
+                "numDimensions": dim,
+                "similarity": "cosine"
+            },
+            {"type": "filter", "path": "city"},
+            {"type": "filter", "path": "company"},
+            {"type": "filter", "path": "dataset_id"}
+        ]
+    }
+
+    try:
+        model = SearchIndexModel(
+            definition=definition,
+            name=index_name,
+            type="vectorSearch"
+        )
+        created_name = collection.create_search_index(model=model)
+        print(f"  ✓ Initiated search index creation: '{created_name}'")
+    except Exception as create_err:
+        print(f"  ❌ Error creating SearchIndexModel: {create_err}")
+        return False
+
+    # 3. Poll until queryable (status == READY or queryable == True, max 5 min timeout)
+    print(f"  ⏳ Waiting for index '{index_name}' to become queryable (timeout: 5 min)...")
+    start_time = time.time()
+    timeout_secs = 300
+    is_ready = False
+
+    while time.time() - start_time < timeout_secs:
+        try:
+            indexes = list(collection.list_search_indexes())
+            target_idx = next((i for i in indexes if i.get("name") == index_name), None)
+            if target_idx:
+                status = target_idx.get("status", "BUILDING").upper()
+                queryable = target_idx.get("queryable", False)
+                print(f"    ... Status: {status} | Queryable: {queryable} (Elapsed: {int(time.time() - start_time)}s)")
+                if status == "READY" or queryable is True:
+                    print(f"  🎉 Atlas Vector Search Index '{index_name}' is READY and queryable!")
+                    is_ready = True
+                    break
+                elif status in ("FAILED", "DOES_NOT_EXIST"):
+                    print(f"  ❌ Index creation failed with status: {status}")
+                    break
+        except Exception as poll_err:
+            print(f"    ... Polling check: {poll_err}")
+
+        time.sleep(10)
+
+    if not is_ready:
+        print(f"  ⚠️ Index creation is still building in Atlas background. It will become ready shortly.")
+
+    return is_ready
 
 
 def setup_indexes():
@@ -43,9 +141,6 @@ def setup_indexes():
         print("✅ Successfully connected to MongoDB Cloud!")
     except Exception as e:
         print(f"❌ Connection failed: {e}")
-        print("\nTroubleshooting tips for MongoDB Atlas:")
-        print("1. In MongoDB Atlas, go to 'Network Access' -> Add IP Address -> 'Allow Access from Anywhere' (0.0.0.0/0) or add your current IP.")
-        print("2. Check that your database username and password in the URI are correct (and percent-encode special characters like @ or #).")
         return
 
     # Resolve database
@@ -59,75 +154,27 @@ def setup_indexes():
     print(f"Target Database: {db.name}")
 
     # Determine collections to index
-    target_collection_names = []
+    target_collection_names = ["dataset_records"]
     if MONGODB_COLLECTIONS_RAW:
         for c in MONGODB_COLLECTIONS_RAW.split(","):
             c_clean = c.strip()
             if c_clean and c_clean not in target_collection_names:
                 target_collection_names.append(c_clean)
 
-    for key, val in os.environ.items():
-        if key.startswith("MONGODB_COLLECTION_") or key.startswith("MONGODB_COLLECTION_NAME_"):
-            for part in val.split(","):
-                c_clean = part.strip()
-                if c_clean and c_clean not in target_collection_names:
-                    target_collection_names.append(c_clean)
-
-    if DEFAULT_COLLECTION_NAME and DEFAULT_COLLECTION_NAME not in target_collection_names:
-        target_collection_names.append(DEFAULT_COLLECTION_NAME)
-
-    # If empty, query the database for all user collections
-    if not target_collection_names:
-        try:
-            target_collection_names = [c for c in db.list_collection_names() if not c.startswith("system.")]
-        except Exception:
-            target_collection_names = ["metrology"]
-
-    print(f"Collections to index ({len(target_collection_names)}): {', '.join(target_collection_names)}")
-
     indexes_to_create = [
         # Canonical columns
+        ("company", ASCENDING),
         ("company_name", ASCENDING),
+        ("person", ASCENDING),
         ("contact_person", ASCENDING),
         ("designation", ASCENDING),
+        ("phone", ASCENDING),
         ("mobile_no", ASCENDING),
-        ("landline_telephone", ASCENDING),
-        ("landline_other_no", ASCENDING),
-        ("telephone_1", ASCENDING),
-        ("telephone_2", ASCENDING),
         ("email", ASCENDING),
-        ("email_1", ASCENDING),
-        ("email_2", ASCENDING),
-        ("address", ASCENDING),
         ("city", ASCENDING),
-        ("state", ASCENDING),
-        ("pin", ASCENDING),
-        ("group", ASCENDING),
-        ("records_merged", ASCENDING),
-        ("review_required", ASCENDING),
-        ("sources", ASCENDING),
-        ("remarks", ASCENDING),
-        # Verbatim header columns from collections
-        ("Company Name", ASCENDING),
-        ("Contact Person", ASCENDING),
-        ("Designation", ASCENDING),
-        ("Mobile No.", ASCENDING),
-        ("Landline / Telephone", ASCENDING),
-        ("Landline / Other No.", ASCENDING),
-        ("Telephone 1", ASCENDING),
-        ("Telephone 2", ASCENDING),
-        ("Email", ASCENDING),
-        ("Email 1", ASCENDING),
-        ("Email 2", ASCENDING),
-        ("Address", ASCENDING),
-        ("City", ASCENDING),
-        ("State", ASCENDING),
-        ("PIN", ASCENDING),
-        ("Group", ASCENDING),
-        ("Records Merged", ASCENDING),
-        ("Review Required", ASCENDING),
-        ("Sources", ASCENDING),
-        ("Remarks", ASCENDING),
+        ("location", ASCENDING),
+        ("dataset_id", ASCENDING),
+        ("search_text", ASCENDING),
     ]
 
     for col_name in target_collection_names:
@@ -136,7 +183,7 @@ def setup_indexes():
             count = collection.estimated_document_count()
         except Exception:
             count = 0
-        print(f"\n📂 Indexing collection: '{col_name}' ({count:,} documents)...")
+        print(f"\n📂 Indexing B-tree and text fields on: '{col_name}' ({count:,} documents)...")
 
         for field, direction in indexes_to_create:
             try:
@@ -146,23 +193,27 @@ def setup_indexes():
             except Exception as err:
                 print(f"  ⚠️ Index {field}: {err}")
 
-        # Optional full text index for multi-field search acceleration
+        # Text index for lexical search
         try:
             collection.create_index([
-                ("company_name", TEXT),
-                ("group", TEXT),
-                ("contact_person", TEXT),
-                ("address", TEXT),
-                ("remarks", TEXT)
-            ], name="idx_company_text_search", background=True)
+                ("company", TEXT),
+                ("person", TEXT),
+                ("designation", TEXT),
+                ("location", TEXT),
+                ("search_text", TEXT)
+            ], name="idx_text_search", background=True)
             print("  ✓ Compound text index created.")
         except Exception:
             pass
 
+    # Setup Atlas Vector Search index on dataset_records
+    setup_vector_search_index(db["dataset_records"])
+
     print("\n" + "=" * 60)
-    print(f"🎉 MongoDB Cloud index setup complete across all {len(target_collection_names)} collections!")
+    print(f"🎉 MongoDB Cloud index setup complete!")
     print("=" * 60)
 
 
 if __name__ == "__main__":
     setup_indexes()
+
