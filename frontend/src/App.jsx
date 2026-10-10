@@ -48,6 +48,10 @@ export default function App() {
   });
 
   const scrollViewRef = useRef(null);
+  const pendingScrollUserMsgId = useRef(null);
+  const pendingScrollAssistantId = useRef(null);
+  const userScrolledUpRef = useRef(false);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const docsPanelRef = useRef(null);
   const recognitionRef = useRef(null);
 
@@ -160,13 +164,41 @@ export default function App() {
     }
   }, [activeDatasetId]);
 
-  // Auto-scroll when messages update
+  // Monitor manual scroll by the user to avoid moving them if reading above
+  const handleScroll = (e) => {
+    const target = e.currentTarget;
+    const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+    userScrolledUpRef.current = distanceFromBottom > 150;
+    setShowJumpToBottom(distanceFromBottom > 350);
+  };
+
+  // ChatGPT-style scrolling:
+  // 1. When user sends a message, scroll user message near top of viewport (once).
+  // 2. While loading, do not move scroll position.
+  // 3. When answer arrives, keep top of new answer in view (never scroll down to the bottom).
+  // 4. If user manually scrolled up while loading, do not move them.
   useEffect(() => {
-    if (scrollViewRef.current) {
-      scrollViewRef.current.scrollTo({
-        top: scrollViewRef.current.scrollHeight,
-        behavior: 'smooth',
-      });
+    if (!scrollViewRef.current) return;
+
+    if (pendingScrollUserMsgId.current) {
+      const userEl = document.getElementById(`msg-${pendingScrollUserMsgId.current}`);
+      if (userEl) {
+        userEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pendingScrollUserMsgId.current = null;
+      }
+    } else if (pendingScrollAssistantId.current && !loading) {
+      if (!userScrolledUpRef.current) {
+        const answerEl = document.getElementById(`msg-${pendingScrollAssistantId.current}`);
+        if (answerEl) {
+          const rect = answerEl.getBoundingClientRect();
+          const containerRect = scrollViewRef.current.getBoundingClientRect();
+          // Scroll so top of answer starts at top of chat area if off-screen
+          if (rect.top < containerRect.top || rect.top > containerRect.bottom - 80) {
+            answerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+      }
+      pendingScrollAssistantId.current = null;
     }
   }, [messages, loading]);
 
@@ -223,17 +255,51 @@ export default function App() {
     setDocsDropdownOpen(false);
 
     if (newDataset && (newDataset.filename || newDataset.count)) {
-      const fileName = newDataset.filename || `${newDataset.count} uploaded datasets`;
+      const fileName = newDataset.filename || (newDataset.count ? `${newDataset.count} uploaded datasets` : 'Dataset');
       const recCount = newDataset.record_count?.toLocaleString() || newDataset.total_records?.toLocaleString() || 'All';
+
+      const userUploadMsg = {
+        id: `user-upload-${Date.now()}`,
+        role: 'user',
+        content: `Uploaded dataset: ${fileName}`,
+      };
+
       const announcementMsg = {
-        id: `assistant-dataset-ready-${Date.now()}`,
+        id: `assistant-dataset-ready-${Date.now() + 1}`,
         role: 'assistant',
         is_system_notice: true,
         text: `Your dataset is ready for private AI search.\n\n📄 File: ${fileName}\n📊 Records: ${recCount}\n\nThis file is now part of the searchable pool. All queries search across all uploaded datasets by default!`,
         dataset_name: fileName,
       };
 
-      setMessages((prev) => [...prev, announcementMsg]);
+      let activeId = currentChatId;
+      if (!activeId) {
+        activeId = `chat-${Date.now()}`;
+        setCurrentChatId(activeId);
+      }
+
+      setMessages((prev) => {
+        const updated = [...prev, userUploadMsg, announcementMsg];
+        setChatHistory((hist) => {
+          const existingIdx = hist.findIndex((c) => c.id === activeId);
+          const chatTitle = `Uploaded: ${fileName.length > 25 ? fileName.substring(0, 25) + '...' : fileName}`;
+          const chatItem = {
+            id: activeId,
+            title: chatTitle,
+            timestamp: Date.now(),
+            messages: updated,
+          };
+
+          if (existingIdx >= 0) {
+            const copy = [...hist];
+            copy[existingIdx] = chatItem;
+            return copy;
+          } else {
+            return [chatItem, ...hist];
+          }
+        });
+        return updated;
+      });
     }
   };
 
@@ -304,6 +370,7 @@ export default function App() {
 
     const newMessages = [...messages, userMsg, loadingMsg];
     setMessages(newMessages);
+    pendingScrollUserMsgId.current = userMsg.id;
     setLoading(true);
 
     let activeId = currentChatId;
@@ -338,6 +405,7 @@ export default function App() {
         msg.id === loadingMsgId ? assistantMsg : msg
       );
 
+      pendingScrollAssistantId.current = assistantMsg.id;
       setMessages(finalMessages);
 
       setChatHistory((prev) => {
@@ -413,26 +481,26 @@ export default function App() {
     : sortedDatasets;
 
   return (
-    <div className="bg-[#f8fafc] text-slate-800 antialiased h-screen flex flex-col justify-between overflow-hidden selection:bg-sky-100 selection:text-sky-900 relative">
+    <div className="bg-[#f8fafc] text-slate-800 antialiased h-screen h-[100dvh] min-h-[100dvh] max-h-[100dvh] flex flex-col justify-between overflow-hidden overscroll-none selection:bg-sky-100 selection:text-sky-900 relative w-full max-w-full touch-pan-y">
       {/* Background Layer: Tech Grid & Ambient AI Metrology Glow */}
       <div className="absolute inset-0 tech-grid-pattern pointer-events-none z-0"></div>
       <div className="absolute inset-0 ambient-glow pointer-events-none z-0"></div>
       <div className="absolute inset-0 calibration-rings pointer-events-none z-0"></div>
 
-      {/* BEGIN: TopHeader */}
-      <header className="relative z-40 w-full px-6 py-4 flex items-center justify-between border-b border-sky-100/70 bg-white/70 backdrop-blur-md shrink-0">
+      {/* BEGIN: TopHeader (Firmly Static / Locked to Top) */}
+      <header className="sticky top-0 z-40 w-full px-2.5 sm:px-6 py-2 sm:py-3 flex items-center justify-between border-b border-sky-100/70 bg-white/95 backdrop-blur-md shrink-0 gap-2 select-none shadow-xs">
         {/* Left Navigation: Hamburger Menu & Authentic CALISPEC Logo */}
-        <div className="flex items-center space-x-5">
+        <div className="flex items-center space-x-1.5 sm:space-x-3 shrink-0">
           {/* Circular Hamburger Button */}
           <button
             aria-label="Open Navigation Menu"
-            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 bg-white border border-slate-200 hover:text-sky-600 hover:border-sky-200 hover:bg-sky-50/50 transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+            className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-full flex items-center justify-center text-slate-600 bg-white border border-slate-200 hover:text-sky-600 hover:border-sky-200 hover:bg-sky-50/50 transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-sky-500/20 shrink-0 cursor-pointer"
             data-purpose="toggle-sidebar"
             type="button"
             onClick={() => setSidebarOpen((prev) => !prev)}
           >
             <svg
-              className="w-5 h-5"
+              className="w-4 h-4 sm:w-5 sm:h-5"
               fill="none"
               stroke="currentColor"
               strokeLinecap="round"
@@ -448,24 +516,24 @@ export default function App() {
 
           {/* Authentic CALISPEC Logo */}
           <a
-            className="flex items-center cursor-pointer select-none transition-transform hover:opacity-95"
+            className="flex items-center cursor-pointer select-none transition-transform hover:opacity-95 shrink-0"
             data-purpose="brand-logo"
             href="#"
             onClick={handleNewChat}
           >
             <img
               alt="CALISPEC - Proficient and Nimble"
-              className="h-10 sm:h-11 md:h-12 w-auto object-contain select-none"
+              className="h-7 sm:h-9 md:h-10 w-auto object-contain select-none shrink-0"
               src="/calispec-logo-transparent.png"
             />
           </a>
         </div>
 
         {/* Right Navigation: Uploaded Documents Indicator & User Profile */}
-        <div className="flex items-center space-x-2.5">
+        <div className="flex items-center space-x-1.5 sm:space-x-2.5 shrink-0">
           <div className="relative z-50" ref={docsPanelRef}>
             <div
-              className={`flex items-center space-x-2.5 px-4 py-2 rounded-full border transition-all cursor-pointer shadow-sm group select-none ${
+              className={`flex items-center space-x-1.5 sm:space-x-2 px-2 sm:px-3.5 py-1 sm:py-1.5 rounded-full border transition-all cursor-pointer shadow-sm group select-none ${
                 activeDoc
                   ? 'border-sky-300 bg-sky-50/70 text-sky-900'
                   : 'border-sky-200/80 bg-white/90 text-slate-700 hover:border-sky-300'
@@ -475,7 +543,7 @@ export default function App() {
             >
               {/* Database Icon */}
               <svg
-                className="w-4 h-4 text-sky-600 group-hover:scale-105 transition-transform"
+                className="w-3.5 h-3.5 text-sky-600 group-hover:scale-105 transition-transform shrink-0"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth="2"
@@ -485,21 +553,21 @@ export default function App() {
                 <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
                 <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
               </svg>
-              {/* Status Label */}
-              <span className="text-sm font-medium tracking-tight truncate max-w-[170px]" title={activeDoc ? activeDoc.filename : 'Uploaded Documents'}>
+              {/* Status Label (Full title on tablet/desktop, compact on mobile) */}
+              <span className="hidden sm:inline text-xs sm:text-sm font-medium tracking-tight truncate max-w-[120px] md:max-w-[170px]" title={activeDoc ? activeDoc.filename : 'Uploaded Documents'}>
                 {activeDoc ? activeDoc.filename : 'Uploaded Documents'}
               </span>
               {/* Indexed / Active Badge */}
-              <span className={`text-xs px-2.5 py-0.5 font-semibold rounded-full ${
+              <span className={`text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 font-semibold rounded-full shrink-0 ${
                 activeDoc
                   ? 'text-emerald-700 bg-emerald-100'
                   : 'text-sky-700 bg-sky-100'
               }`}>
-                {activeDoc ? 'Filtered' : datasets.length > 0 ? `${datasets.length} Indexed` : 'All Files'}
+                {activeDoc ? (activeDoc.filename?.length > 10 ? activeDoc.filename.slice(0, 9) + '…' : activeDoc.filename) : datasets.length > 0 ? `${datasets.length} Files` : 'All Files'}
               </span>
               {/* Dropdown Chevron */}
               <svg
-                className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ml-0.5 ${
+                className={`w-3 h-3 text-slate-400 group-hover:text-slate-600 transition-transform duration-200 ml-0.5 shrink-0 ${
                   docsDropdownOpen ? 'rotate-180' : ''
                 }`}
                 fill="none"
@@ -516,29 +584,29 @@ export default function App() {
             {/* Dropdown Menu */}
             {docsDropdownOpen && (
               <div
-                className="absolute right-0 mt-2.5 w-96 rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl p-4 z-50 animate-fadeIn"
+                className="fixed sm:absolute left-2.5 right-2.5 sm:left-auto sm:right-0 top-[56px] sm:top-auto sm:mt-2.5 w-auto sm:w-96 max-w-[calc(100vw-1.25rem)] sm:max-w-sm rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.14)] backdrop-blur-xl p-3 sm:p-4 z-50 animate-fadeIn"
                 id="db-docs-panel"
               >
                 {/* Header */}
-                <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-slate-100">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-sky-600 text-base">folder_open</span>
-                    <span className="text-xs font-bold text-slate-800 tracking-wide uppercase font-headline-xl">
+                <div className="flex flex-wrap items-center justify-between gap-1.5 pb-2.5 mb-2.5 border-b border-slate-100">
+                  <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                    <span className="material-symbols-outlined text-sky-600 text-base shrink-0">folder_open</span>
+                    <span className="text-xs font-bold text-slate-800 tracking-wide uppercase font-headline-xl truncate">
                       Indexed Documents
                     </span>
-                    <span className="text-[10px] text-slate-400 font-normal">({sortedDatasets.length})</span>
+                    <span className="text-[10px] text-slate-400 font-normal shrink-0">({sortedDatasets.length})</span>
                   </div>
                   {activeDoc ? (
                     <button
                       type="button"
                       onClick={() => setActiveDatasetId('all')}
-                      className="text-[10px] text-sky-600 hover:text-sky-800 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded border border-sky-200 font-semibold transition-all"
+                      className="text-[10px] text-sky-600 hover:text-sky-800 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded border border-sky-200 font-semibold transition-all cursor-pointer shrink-0"
                       title="Clear selection and search all database files"
                     >
                       Search All Files
                     </button>
                   ) : (
-                    <span className="text-[10px] font-label-sm text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 font-semibold">
+                    <span className="text-[10px] font-label-sm text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200 font-semibold shrink-0">
                       Searching All Files
                     </span>
                   )}
@@ -569,21 +637,21 @@ export default function App() {
                 </div>
 
                 {/* Scope Hint */}
-                <div className="mb-2 px-1 text-[11px] text-slate-500 flex items-center justify-between">
-                  <span>
+                <div className="mb-2 px-1 text-[11px] text-slate-500 flex flex-wrap items-center justify-between gap-1">
+                  <span className="truncate max-w-[65%] sm:max-w-[70%]">
                     {activeDoc ? (
                       <>Active: <strong className="text-sky-700">{activeDoc.filename}</strong></>
                     ) : (
                       <>Active: <strong className="text-slate-700">All Files</strong> (No filter)</>
                     )}
                   </span>
-                  <span className="text-[10px] text-slate-400">
+                  <span className="text-[10px] text-slate-400 shrink-0">
                     {activeDoc ? 'Click active doc to deselect' : 'Click a doc to search it'}
                   </span>
                 </div>
 
                 {/* Document List (Alphabetical Order, Scrollable) */}
-                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-60 sm:max-h-72 overflow-y-auto pr-1">
                   {filteredDatasets.length === 0 ? (
                     <div className="py-6 text-center text-xs text-slate-400">
                       {datasets.length === 0 ? (
@@ -714,7 +782,7 @@ export default function App() {
                   <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-1.5">
                     <button
                       type="button"
-                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-700 border border-sky-200 transition-all shadow-xs"
+                      className="w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-700 border border-sky-200 transition-all shadow-xs cursor-pointer"
                       onClick={() => {
                         setDocsDropdownOpen(false);
                         setUploadModalOpen(true);
@@ -740,18 +808,18 @@ export default function App() {
                 setLoginModalOpen(true);
               }
             }}
-            className="w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-xs focus:outline-none select-none cursor-pointer"
+            className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-all shadow-xs focus:outline-none select-none cursor-pointer"
             title={currentUser ? `Profile: ${currentUser.email}` : "Sign In as Uploader"}
           >
             {currentUser ? (
-              <div className="relative w-10 h-10 rounded-full bg-gradient-to-tr from-sky-600 to-indigo-600 text-white font-bold text-sm flex items-center justify-center border-2 border-white shadow-sm ring-2 ring-sky-200 hover:ring-sky-400 transition-all">
+              <div className="relative w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-tr from-sky-600 to-indigo-600 text-white font-bold text-xs sm:text-sm flex items-center justify-center border-2 border-white shadow-sm ring-2 ring-sky-200 hover:ring-sky-400 transition-all">
                 {currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U'}
                 {/* Active online dot */}
                 <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-white rounded-full"></span>
               </div>
             ) : (
-              <div className="w-10 h-10 rounded-full bg-slate-100 hover:bg-sky-50 border border-slate-300 hover:border-sky-300 text-slate-600 hover:text-sky-600 flex items-center justify-center transition-all shadow-2xs">
-                <span className="material-symbols-outlined text-xl">person</span>
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-slate-100 hover:bg-sky-50 border border-slate-300 hover:border-sky-300 text-slate-600 hover:text-sky-600 flex items-center justify-center transition-all shadow-2xs">
+                <span className="material-symbols-outlined text-lg sm:text-xl">person</span>
               </div>
             )}
           </button>
@@ -759,10 +827,10 @@ export default function App() {
           {/* Profile Dropdown Menu (Only shown when user clicks their round profile) */}
           {currentUser && profileDropdownOpen && (
             <div
-              className="absolute right-0 mt-2.5 w-64 rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.15)] p-4 z-50 animate-fadeIn"
+              className="absolute right-0 mt-2.5 w-[calc(100vw-2rem)] sm:w-64 max-w-xs rounded-2xl bg-white border border-slate-200 shadow-[0_12px_36px_rgba(15,23,42,0.15)] p-4 z-50 animate-fadeIn"
             >
               <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-600 to-indigo-600 text-white font-bold text-sm flex items-center justify-center shrink-0 shadow-sm">
+                <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-tr from-sky-600 to-indigo-600 text-white font-bold text-sm flex items-center justify-center shrink-0 shadow-sm">
                   {currentUser.email ? currentUser.email.charAt(0).toUpperCase() : 'U'}
                 </div>
                 <div className="truncate flex-1 min-w-0">
@@ -818,57 +886,93 @@ export default function App() {
       </header>
       {/* END: TopHeader */}
 
-      {/* BEGIN: Side-by-Side Workspace Layout */}
+      {/* BEGIN: Workspace Layout with Responsive Drawer */}
       <div className="flex-1 flex overflow-hidden relative z-10 w-full min-h-0">
-        {/* Left Sidebar Menu (Visible when toggled, docked alongside chat) */}
+        {/* Responsive Sidebar Drawer & Backdrop */}
         {sidebarOpen && (
-          <Sidebar
-            onClose={() => setSidebarOpen(false)}
-            onNewChat={handleNewChat}
-            chatHistory={chatHistory}
-            currentChatId={currentChatId}
-            onSelectChat={handleSelectChat}
-            onDeleteChat={handleDeleteChat}
-            onClearHistory={handleClearHistory}
-          />
+          <>
+            {/* Mobile/Tablet Backdrop */}
+            <div
+              className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-40 lg:hidden animate-fadeIn"
+              onClick={() => setSidebarOpen(false)}
+              aria-hidden="true"
+            />
+            {/* Sidebar Wrapper: Fixed overlay drawer on mobile/tablet, docked alongside on desktop */}
+            <div className="fixed inset-y-0 left-0 z-50 lg:static lg:z-auto h-full shrink-0 shadow-2xl lg:shadow-none animate-fadeIn">
+              <Sidebar
+                onClose={() => setSidebarOpen(false)}
+                onNewChat={handleNewChat}
+                chatHistory={chatHistory}
+                currentChatId={currentChatId}
+                onSelectChat={handleSelectChat}
+                onDeleteChat={handleDeleteChat}
+                onClearHistory={handleClearHistory}
+              />
+            </div>
+          </>
         )}
 
-        {/* Right Chat Column (Fully visible alongside menu, never hidden in background) */}
+        {/* Right Chat Column (Fluid width, adapts automatically) */}
         <div className="flex-1 flex flex-col min-w-0 h-full justify-between relative overflow-hidden">
           {/* BEGIN: MainContentArea */}
           <main
-            className={`relative z-10 flex-1 flex flex-col items-center px-4 max-w-4xl mx-auto select-none w-full overflow-hidden ${
-              messages.length === 0 ? 'justify-center -mt-10' : 'justify-start pt-2'
+            className={`relative z-10 flex-1 flex flex-col select-none w-full overflow-hidden ${
+              messages.length === 0
+                ? 'max-w-4xl justify-center items-center mx-auto px-2.5 sm:px-4 lg:px-6 -mt-6 sm:-mt-10'
+                : 'max-w-7xl 2xl:max-w-[1600px] justify-start items-start pt-1 sm:pt-2 px-1.5 sm:px-3 lg:px-4'
             }`}
           >
 
-            <div className="flex flex-col w-full h-full justify-between pb-2">
+            <div className="flex flex-col w-full h-full justify-between pb-1 sm:pb-2">
               {messages.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 px-4 my-auto">
+                <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3 sm:space-y-4 px-3 sm:px-4 my-auto">
                   {/* Main Heading with High-Precision Accent */}
-                  <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-tight">
+                  <h1 className="text-2xl xs:text-3xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-tight">
                     Search Your <span className="text-[#0284c7] drop-shadow-sm">Business Data</span>
                   </h1>
                   {/* Subtitle */}
-                  <p className="text-base sm:text-lg md:text-xl text-slate-500 max-w-2xl mx-auto font-normal leading-relaxed">
+                  <p className="text-xs sm:text-base md:text-lg text-slate-500 max-w-2xl mx-auto font-normal leading-relaxed">
                     Ask questions about companies, people, contacts, locations, departments, and more.
                   </p>
                 </div>
               ) : (
                 /* Conversation Scroll Stage */
                 <div
-                  className="w-full flex-1 overflow-y-auto space-y-6 pt-4 pb-6 px-1 md:px-3"
+                  className="w-full flex-1 overflow-y-auto overscroll-contain touch-pan-y space-y-3 sm:space-y-4 pt-1 sm:pt-2 pb-6 sm:pb-8 px-1 sm:px-3 relative"
                   id="main-scroll-view"
                   ref={scrollViewRef}
+                  onScroll={handleScroll}
                 >
                   {messages.map((message) => (
-                    <ChatMessage
-                      key={message.id}
-                      message={message}
-                      onInspect={(doc) => setInspectingDoc(doc)}
-                      onRunSearch={(searchQuery) => handleSendMessage(searchQuery)}
-                    />
+                    <div key={message.id} id={`msg-${message.id}`} className="w-full">
+                      <ChatMessage
+                        message={message}
+                        onInspect={(doc) => setInspectingDoc(doc)}
+                        onRunSearch={(searchQuery) => handleSendMessage(searchQuery)}
+                      />
+                    </div>
                   ))}
+
+                  {/* Floating Jump to Latest button (arrow only) */}
+                  {showJumpToBottom && (
+                    <div className="sticky bottom-3 flex justify-center pointer-events-none z-30">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          scrollViewRef.current?.scrollTo({
+                            top: scrollViewRef.current.scrollHeight,
+                            behavior: 'smooth'
+                          });
+                          setShowJumpToBottom(false);
+                        }}
+                        className="pointer-events-auto w-9 h-9 rounded-full bg-white/95 backdrop-blur-md text-sky-600 hover:text-sky-700 hover:bg-sky-50 border border-sky-200 shadow-md hover:shadow-lg flex items-center justify-center transition-all cursor-pointer active:scale-90"
+                        title="Jump to latest"
+                        aria-label="Jump to latest"
+                      >
+                        <span className="material-symbols-outlined text-lg">arrow_downward</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -876,90 +980,178 @@ export default function App() {
           {/* END: MainContentArea */}
 
           {/* BEGIN: FloatingSearchInputArea */}
-          <footer className="relative z-20 w-full pb-8 sm:pb-10 px-4 sm:px-6 flex justify-center shrink-0">
-            <div className="w-full max-w-3xl">
-              {/* Glow Search Container */}
-              <div
-                className="glow-search-bar bg-white rounded-full flex items-center px-3.5 py-2.5 sm:px-4 sm:py-3"
-                data-purpose="search-box-container"
-              >
-                {/* Upload / Add Document Circular Button (Restricted to DATA_UPLOADER) */}
-                {isDataUploader && (
-                  <button
-                    aria-label="Attach documents or add files"
-                    className="w-9 h-9 rounded-full flex items-center justify-center text-slate-500 hover:text-sky-600 hover:bg-sky-50 active:scale-95 transition-all duration-150 focus:outline-none"
-                    data-purpose="attachment-button"
-                    type="button"
-                    onClick={() => setUploadModalOpen(true)}
-                  >
-                    <svg className="w-5 h-5 stroke-[2.2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <line x1="12" x2="12" y1="5" y2="19"></line>
-                      <line x1="5" x2="19" y1="12" y2="12"></line>
-                    </svg>
-                  </button>
-                )}
+          <footer className="relative z-20 w-full pb-2.5 sm:pb-4 md:pb-6 px-1.5 sm:px-3 lg:px-4 flex justify-start shrink-0">
+            {messages.length === 0 ? (
+              <div className="w-full max-w-3xl mx-auto">
+                {/* Glow Search Container */}
+                <div
+                  className="glow-search-bar bg-white rounded-full flex items-center px-2.5 py-1.5 sm:px-4 sm:py-2.5 w-full"
+                  data-purpose="search-box-container"
+                >
+                  {/* Upload / Add Document Circular Button (Restricted to DATA_UPLOADER) */}
+                  {isDataUploader && (
+                    <button
+                      aria-label="Attach documents or add files"
+                      className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center text-slate-500 hover:text-sky-600 hover:bg-sky-50 active:scale-95 transition-all duration-150 focus:outline-none shrink-0"
+                      data-purpose="attachment-button"
+                      type="button"
+                      onClick={() => setUploadModalOpen(true)}
+                    >
+                      <svg className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <line x1="12" x2="12" y1="5" y2="19"></line>
+                        <line x1="5" x2="19" y1="12" y2="12"></line>
+                      </svg>
+                    </button>
+                  )}
 
-                {/* Text Input Field */}
-                <input
-                  className="flex-1 bg-transparent border-none text-slate-800 placeholder-slate-400 text-base sm:text-lg px-3 focus:outline-none focus:ring-0"
-                  data-purpose="query-input"
-                  placeholder="Type here..."
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleSendMessage();
-                    }
-                  }}
-                />
+                  {/* Text Input Field */}
+                  <input
+                    className="flex-1 bg-transparent border-none text-slate-800 placeholder-slate-400 text-sm sm:text-base px-2 sm:px-3 focus:outline-none focus:ring-0 min-w-0"
+                    data-purpose="query-input"
+                    placeholder="Type here..."
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        handleSendMessage();
+                      }
+                    }}
+                  />
 
-                {/* Right Side Controls: Microphone & Active Send Arrow */}
-                <div className="flex items-center space-x-1 sm:space-x-2">
-                  {/* Voice Input Button */}
-                  <button
-                    aria-label="Voice input"
-                    className={`w-9 h-9 rounded-full flex items-center justify-center transition-all focus:outline-none ${
-                      isRecording
-                        ? 'bg-rose-100 text-rose-600 animate-pulse'
-                        : 'text-slate-400 hover:text-sky-600 hover:bg-sky-50'
-                    }`}
-                    data-purpose="voice-input-button"
-                    type="button"
-                    onClick={toggleDictation}
-                    title={isRecording ? 'Stop Voice Input' : 'Voice Input'}
-                  >
-                    <svg className="w-5 h-5 stroke-[2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" strokeLinecap="round" strokeLinejoin="round"></path>
-                      <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round"></path>
-                      <line x1="12" x2="12" y1="19" y2="23"></line>
-                      <line x1="8" x2="16" y1="23" y2="23"></line>
-                    </svg>
-                  </button>
+                  {/* Right Side Controls: Microphone & Active Send Arrow */}
+                  <div className="flex items-center space-x-1 sm:space-x-1.5 shrink-0">
+                    {/* Voice Input Button */}
+                    <button
+                      aria-label="Voice input"
+                      className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center transition-all focus:outline-none shrink-0 ${
+                        isRecording
+                          ? 'bg-rose-100 text-rose-600 animate-pulse'
+                          : 'text-slate-400 hover:text-sky-600 hover:bg-sky-50'
+                      }`}
+                      data-purpose="voice-input-button"
+                      type="button"
+                      onClick={toggleDictation}
+                      title={isRecording ? 'Stop Voice Input' : 'Voice Input'}
+                    >
+                      <svg className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" strokeLinecap="round" strokeLinejoin="round"></path>
+                        <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round"></path>
+                        <line x1="12" x2="12" y1="19" y2="23"></line>
+                        <line x1="8" x2="16" y1="23" y2="23"></line>
+                      </svg>
+                    </button>
 
-                  {/* Vibrant Precision Blue Send Button */}
-                  <button
-                    aria-label="Send query"
-                    className="w-10 h-10 rounded-full bg-[#0284c7] hover:bg-[#0369a1] text-white flex items-center justify-center shadow-md shadow-sky-500/25 active:scale-95 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-sky-500/50 disabled:opacity-50"
-                    data-purpose="submit-search-button"
-                    type="button"
-                    disabled={loading}
-                    onClick={() => handleSendMessage()}
-                    title="Send query"
-                  >
-                    <svg className="w-5 h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <line x1="12" x2="12" y1="19" y2="5"></line>
-                      <polyline points="5 12 12 5 19 12"></polyline>
-                    </svg>
-                  </button>
+                    {/* Vibrant Precision Blue Send Button */}
+                    <button
+                      aria-label="Send query"
+                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#0284c7] hover:bg-[#0369a1] text-white flex items-center justify-center shadow-md shadow-sky-500/25 active:scale-95 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-sky-500/50 disabled:opacity-50 shrink-0 cursor-pointer"
+                      data-purpose="submit-search-button"
+                      type="button"
+                      disabled={loading}
+                      onClick={() => handleSendMessage()}
+                      title="Send query"
+                    >
+                      <svg className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <line x1="12" x2="12" y1="19" y2="5"></line>
+                        <polyline points="5 12 12 5 19 12"></polyline>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="w-full max-w-7xl 2xl:max-w-[1600px] px-1 sm:px-3">
+                <div className="w-full flex flex-col md:flex-row items-start gap-4 lg:gap-6">
+                  {/* Invisible spacer matching aside exact width */}
+                  <div className="hidden md:block w-full md:w-72 lg:w-72 xl:w-80 shrink-0 pointer-events-none" aria-hidden="true" />
+
+                  {/* Input container exactly matching the results column */}
+                  <div className="flex-1 min-w-0 w-full max-w-3xl">
+                    <div
+                      className="glow-search-bar bg-white rounded-full flex items-center px-2.5 py-1.5 sm:px-4 sm:py-2.5 w-full"
+                      data-purpose="search-box-container"
+                    >
+                      {/* Upload / Add Document Circular Button (Restricted to DATA_UPLOADER) */}
+                      {isDataUploader && (
+                        <button
+                          aria-label="Attach documents or add files"
+                          className="w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center text-slate-500 hover:text-sky-600 hover:bg-sky-50 active:scale-95 transition-all duration-150 focus:outline-none shrink-0"
+                          data-purpose="attachment-button"
+                          type="button"
+                          onClick={() => setUploadModalOpen(true)}
+                        >
+                          <svg className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <line x1="12" x2="12" y1="5" y2="19"></line>
+                            <line x1="5" x2="19" y1="12" y2="12"></line>
+                          </svg>
+                        </button>
+                      )}
+
+                      {/* Text Input Field */}
+                      <input
+                        className="flex-1 bg-transparent border-none text-slate-800 placeholder-slate-400 text-sm sm:text-base px-2 sm:px-3 focus:outline-none focus:ring-0 min-w-0"
+                        data-purpose="query-input"
+                        placeholder="Type here..."
+                        type="text"
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleSendMessage();
+                          }
+                        }}
+                      />
+
+                      {/* Right Side Controls: Microphone & Active Send Arrow */}
+                      <div className="flex items-center space-x-1 sm:space-x-1.5 shrink-0">
+                        {/* Voice Input Button */}
+                        <button
+                          aria-label="Voice input"
+                          className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center transition-all focus:outline-none shrink-0 ${
+                            isRecording
+                              ? 'bg-rose-100 text-rose-600 animate-pulse'
+                              : 'text-slate-400 hover:text-sky-600 hover:bg-sky-50'
+                          }`}
+                          data-purpose="voice-input-button"
+                          type="button"
+                          onClick={toggleDictation}
+                          title={isRecording ? 'Stop Voice Input' : 'Voice Input'}
+                        >
+                          <svg className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" strokeLinecap="round" strokeLinejoin="round"></path>
+                            <path d="M19 10v2a7 7 0 01-14 0v-2" strokeLinecap="round" strokeLinejoin="round"></path>
+                            <line x1="12" x2="12" y1="19" y2="23"></line>
+                            <line x1="8" x2="16" y1="23" y2="23"></line>
+                          </svg>
+                        </button>
+
+                        {/* Vibrant Precision Blue Send Button */}
+                        <button
+                          aria-label="Send query"
+                          className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#0284c7] hover:bg-[#0369a1] text-white flex items-center justify-center shadow-md shadow-sky-500/25 active:scale-95 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-sky-500/50 disabled:opacity-50 shrink-0 cursor-pointer"
+                          data-purpose="submit-search-button"
+                          type="button"
+                          disabled={loading}
+                          onClick={() => handleSendMessage()}
+                          title="Send query"
+                        >
+                          <svg className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <line x1="12" x2="12" y1="19" y2="5"></line>
+                            <polyline points="5 12 12 5 19 12"></polyline>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </footer>
           {/* END: FloatingSearchInputArea */}
         </div>
       </div>
-      {/* END: Side-by-Side Workspace Layout */}
+      {/* END: Workspace Layout with Responsive Drawer */}
 
       {/* Enterprise Authentication Login Modal (Only when opened by user) */}
       <LoginModal

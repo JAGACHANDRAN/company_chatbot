@@ -7,6 +7,15 @@ class ChatRequest(BaseModel):
     dataset_id: Optional[str] = Field(None, description="Optional dataset ID to scope search to a specific uploaded dataset")
     history: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Optional recent chat history turns")
     explain: Optional[bool] = Field(False, description="Optional flag to return retrieval stage breakdown in meta.stages")
+    conversation_id: Optional[str] = Field(None, description="Optional conversation/session ID")
+    session_id: Optional[str] = Field(None, description="Optional session ID")
+
+
+class FeedbackRequest(BaseModel):
+    conversation_id: str = Field(..., description="Conversation or session ID of the trace")
+    message_id: Optional[str] = Field(None, description="Optional message ID")
+    rating: Literal["up", "down"] = Field(..., description="Thumbs up or thumbs down rating")
+    comment: Optional[str] = Field(None, description="Optional user comment (will be PII masked)")
 
 
 class QueryCondition(BaseModel):

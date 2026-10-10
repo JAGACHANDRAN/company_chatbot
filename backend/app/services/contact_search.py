@@ -274,18 +274,19 @@ def _company_candidates(words, vocab, limit=30):
     if not ws:
         return [], ""
 
-    # 1. Exact stems subset or superset matching (e.g. 'tvs' in 'tvs motor' or 'tvs motor' containing 'tvs')
+    # 1. Exact stems subset matching (e.g. 'tvs' in 'tvs motor', or 'delphi tvs' in 'delphi tvs diesel')
     contained = [
         nc for nc, cs in vocab.comp_stems.items()
-        if (ws <= set(cs)) or (set(cs) and set(cs) <= ws)
+        if (ws <= set(cs))
     ]
     if contained:
         return sorted(contained, key=len)[:limit], "partial"
 
-    # 2. Prefix matching on company tokens (only for search words >= 3 chars, e.g. 'tvs' in 'tvsmotors')
+    # 2. Prefix matching on company tokens
     prefix_matches = [
         nc for nc, cs in vocab.comp_stems.items()
-        if any(c.startswith(w) for w in ws for c in cs if len(w) >= 3 and len(c) >= 3)
+        if (all(any(c.startswith(w) for c in cs if len(c) >= len(w)) for w in ws) if len(ws) > 1
+            else any(c.startswith(w) for w in ws for c in cs if len(w) >= 3 and len(c) >= 3))
            or nc.startswith(" ".join(words))
     ]
     if prefix_matches:

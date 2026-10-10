@@ -134,10 +134,14 @@ def is_company_match(query_company: str, record_company: str) -> bool:
     """
     Validates whether a candidate record company matches an explicit query company.
     Strict entity guard:
-    - Exact match on normalized names ('2d inc' == '2d inc')
-    - Word boundary / controlled entity match:
+    - Exact match on normalized names ('2d inc' == '2d inc', 'delphi tvs' == 'delphi tvs')
+    - When query is multi-word (e.g. 'delphi tvs', 'ashok leyland', 'tata motors'):
+      ALL words of query_company MUST be present in record_company as word tokens.
+      'delphi tvs' matches 'Delphi TVS Pvt Ltd', 'Delphi-TVS Diesel Systems'.
+      'delphi tvs' MUST NOT match standalone 'TVS', 'TVS Motors', 'Lucas TVS', 'Delphi Automotive'.
+    - When query is a single word/acronym (e.g. 'tvs'):
       'tvs' matches 'tvs motor company', 't v s motor company ltd', 'delphi tvs', 'lucas-tvs'
-    - REJECTS unrelated companies (e.g. 'accumen automation' for '2d inc').
+    - REJECTS unrelated companies.
     """
     if not query_company or not record_company:
         return False
@@ -159,20 +163,29 @@ def is_company_match(query_company: str, record_company: str) -> bool:
             if q_cand == r_cand:
                 return True
 
-            q_words = q_cand.split()
+            q_words = [w for w in q_cand.split() if w]
+
             if len(q_words) == 1:
                 q_token = q_words[0]
                 pattern = rf"(^|\s|\-){re.escape(q_token)}(\s|\-|$)"
                 if re.search(pattern, r_cand):
                     return True
             else:
+                # Multi-word query (e.g. "delphi tvs", "ashok leyland")
+                # 1. Whole-phrase match inside record
                 pattern = rf"(^|\s|\-){re.escape(q_cand)}(\s|\-|$)"
                 if re.search(pattern, r_cand):
                     return True
 
-            rec_pattern = rf"(^|\s|\-){re.escape(r_cand)}(\s|\-|$)"
-            if re.search(rec_pattern, q_cand):
-                return True
+                # 2. ALL query tokens must appear as distinct whole words in r_cand
+                if all(re.search(rf"(^|\s|\-){re.escape(w)}(\s|\-|$)", r_cand) for w in q_words):
+                    return True
+
+                # 3. Clean alphanumeric exact substring match (e.g. "delphi tvs" in "delphi-tvs diesel systems")
+                clean_q_no_space = re.sub(r"[^a-z0-9]", "", q_cand)
+                clean_r_no_space = re.sub(r"[^a-z0-9]", "", r_cand)
+                if clean_q_no_space and clean_q_no_space in clean_r_no_space:
+                    return True
 
     return False
 

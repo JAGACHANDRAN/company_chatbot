@@ -124,6 +124,17 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
 
     setIsProcessing(false);
 
+    const autoSaved = updatedQueue.filter((i) => i.status === 'auto_saved');
+    if (autoSaved.length > 0 && !updatedQueue.some((i) => i.status === 'needs_review' || i.status === 'error')) {
+      if (onUploadSuccess) {
+        onUploadSuccess(autoSaved.length === 1 ? autoSaved[0].saveResult : { count: autoSaved.length });
+      }
+      setTimeout(() => {
+        handleClose();
+      }, 1000);
+      return;
+    }
+
     // If single file uploaded and it needs review, open its review report directly
     if (updatedQueue.length === 1 && updatedQueue[0].status === 'needs_review') {
       setActiveReviewId(updatedQueue[0].id);
@@ -281,7 +292,7 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-6 overflow-y-auto animate-fadeIn"
       role="dialog"
       aria-modal="true"
     >
@@ -294,13 +305,13 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
 
       {/* Main Modal Card */}
       <div
-        className={`relative w-full ${activeReviewItem ? 'max-w-4xl' : 'max-w-2xl'} bg-white text-slate-800 rounded-3xl shadow-xl shadow-slate-200/70 border border-slate-100 p-5 sm:p-7 relative flex flex-col justify-between max-h-[92vh] z-10`}
+        className={`relative w-full ${activeReviewItem ? 'max-w-4xl' : 'max-w-2xl'} bg-white text-slate-800 rounded-2xl sm:rounded-3xl shadow-xl shadow-slate-200/70 border border-slate-100 p-3.5 sm:p-6 md:p-7 relative flex flex-col justify-between max-h-[94vh] sm:max-h-[90vh] z-10 overflow-hidden`}
         data-purpose="modal-container"
       >
         {/* Top Close Button */}
         <button
           aria-label="Close dialog"
-          className="absolute top-5 right-5 sm:top-6 sm:right-6 w-9 h-9 rounded-xl border border-slate-200/80 bg-slate-50/70 hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-colors cursor-pointer"
+          className="absolute top-3.5 right-3.5 sm:top-6 sm:right-6 w-8 h-8 sm:w-9 sm:h-9 rounded-xl border border-slate-200/80 bg-slate-50/70 hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-colors cursor-pointer z-30"
           onClick={handleClose}
           disabled={isProcessing || isSavingAll || confirmingId !== null}
           type="button"
@@ -312,21 +323,26 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
         </button>
 
         {/* Modal Header Section */}
-        <header className="flex items-start gap-4 mb-6 pr-10">
-          <div className="w-12 h-12 rounded-2xl bg-sky-50 border border-sky-100 flex items-center justify-center shrink-0 text-sky-500 shadow-sm shadow-sky-100/50" data-purpose="header-icon">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" viewBox="0 0 24 24">
+        <header className="flex items-start gap-3 sm:gap-4 mb-3 sm:mb-5 pr-9 sm:pr-12 shrink-0">
+          <div className="w-9 h-9 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-sky-50 border border-sky-100 flex items-center justify-center shrink-0 text-sky-500 shadow-sm shadow-sky-100/50" data-purpose="header-icon">
+            <svg className="w-4 h-4 sm:w-6 sm:h-6" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" viewBox="0 0 24 24">
               <path d="M4 16.5v1.5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1.5M12 14.5v-11M7.5 8 12 3.5 16.5 8"></path>
             </svg>
           </div>
-          <div className="flex-1 pt-0.5">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 leading-snug">
-              {activeReviewItem
-                ? `Cleaning Report: ${activeReviewItem.name}`
-                : allCompleted
-                ? 'Upload & Storage Completed'
-                : 'Upload Dataset'}
+          <div className="flex-1 min-w-0 pt-0.5">
+            <h2 className="text-base sm:text-xl md:text-2xl font-bold tracking-tight text-slate-900 leading-snug break-words">
+              {activeReviewItem ? (
+                <>
+                  <span className="text-slate-900">Cleaning Report: </span>
+                  <span className="text-sky-700 text-sm sm:text-lg break-all">{activeReviewItem.name}</span>
+                </>
+              ) : allCompleted ? (
+                'Upload & Storage Completed'
+              ) : (
+                'Upload Dataset'
+              )}
             </h2>
-            <p className="text-xs sm:text-sm text-slate-500 mt-1 leading-relaxed max-w-lg">
+            <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1 leading-relaxed max-w-lg">
               {activeReviewItem
                 ? 'Review the separated and cleaned records below. Click confirm below to save to MongoDB.'
                 : 'Clean datasets are saved directly to MongoDB without confirmation. Files requiring cleaning present a simple report.'}
@@ -335,10 +351,10 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
         </header>
 
         {/* Modal Body Container */}
-        <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+        <div className="flex-1 overflow-y-auto pr-1 space-y-3 sm:space-y-4">
           {/* Global Error Banner */}
           {globalError && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3.5 flex items-start gap-3 text-xs text-rose-700">
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 flex items-start gap-2.5 text-xs text-rose-700">
               <span className="text-rose-500 font-bold shrink-0">⚠️</span>
               <span className="flex-1">{globalError}</span>
             </div>
@@ -346,9 +362,9 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
 
           {/* VIEW 1: ACTIVE REVIEW REPORT VIEW (STICKY BACK HEADER) */}
           {activeReviewItem ? (
-            <div className="space-y-4">
+            <div className="space-y-3 sm:space-y-4">
               {/* STICKY TOP BACK BAR: pinned at the top while scrolling */}
-              <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-md -mx-5 -mt-2 px-5 py-2.5 border-b border-slate-100 flex items-center justify-between">
+              <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-md -mx-3.5 sm:-mx-6 -mt-2 px-3.5 sm:px-6 py-2 sm:py-2.5 border-b border-slate-100 flex items-center justify-between">
                 <button
                   type="button"
                   onClick={() => setActiveReviewId(null)}
@@ -365,36 +381,36 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
                 </span>
               </div>
 
-              {/* Simple Metrics Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-1">
-                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200/80">
-                  <div className="text-[10px] text-slate-500 uppercase font-semibold font-mono">Records Found</div>
-                  <div className="text-xl font-bold text-slate-900 mt-0.5">
+              {/* Simple Metrics Cards - 3 responsive columns */}
+              <div className="grid grid-cols-3 gap-2 sm:gap-3 pt-0.5">
+                <div className="bg-slate-50 rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-slate-200/80 flex flex-col justify-between">
+                  <div className="text-[9px] sm:text-[10px] text-slate-500 uppercase font-semibold font-mono truncate">Records Found</div>
+                  <div className="text-base sm:text-xl font-bold text-slate-900 mt-0.5">
                     {activeReviewItem.previewData?.summary?.rows_in?.toLocaleString() ?? 0}
                   </div>
                 </div>
 
-                <div className="bg-amber-50/70 rounded-2xl p-4 border border-amber-200/80">
-                  <div className="text-[10px] text-amber-700 uppercase font-semibold font-mono">Separations / Fixes</div>
-                  <div className="text-xl font-bold text-amber-700 mt-0.5">
+                <div className="bg-amber-50/70 rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-amber-200/80 flex flex-col justify-between">
+                  <div className="text-[9px] sm:text-[10px] text-amber-700 uppercase font-semibold font-mono truncate">Separations / Fixes</div>
+                  <div className="text-base sm:text-xl font-bold text-amber-700 mt-0.5">
                     {activeReviewItem.previewData?.total_changes?.toLocaleString() ?? 0}
                   </div>
                 </div>
 
-                <div className="bg-emerald-50/70 rounded-2xl p-4 border border-emerald-200/80 col-span-2 sm:col-span-1">
-                  <div className="text-[10px] text-emerald-700 uppercase font-semibold font-mono">Clean Records Ready</div>
-                  <div className="text-xl font-bold text-emerald-700 mt-0.5">
+                <div className="bg-emerald-50/70 rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-emerald-200/80 flex flex-col justify-between">
+                  <div className="text-[9px] sm:text-[10px] text-emerald-700 uppercase font-semibold font-mono truncate">Clean Records Ready</div>
+                  <div className="text-base sm:text-xl font-bold text-emerald-700 mt-0.5">
                     {activeReviewItem.previewData?.summary?.rows_out?.toLocaleString() ?? 0}
                   </div>
                 </div>
               </div>
 
               {/* Plain-Language Explanation of What Changed */}
-              <div className="bg-sky-50/70 border border-sky-200/80 rounded-2xl p-4">
+              <div className="bg-sky-50/70 border border-sky-200/80 rounded-xl sm:rounded-2xl p-3 sm:p-4">
                 <h4 className="text-xs font-bold text-sky-950 uppercase tracking-wide font-mono mb-2">
                   What was cleaned in this dataset:
                 </h4>
-                <ul className="space-y-1.5 text-xs text-sky-900">
+                <ul className="space-y-1.5 sm:space-y-2 text-xs text-sky-900">
                   {Object.entries(activeReviewItem.previewData?.summary?.changes_by_type || {}).map(([action, count]) => {
                     const descriptions = {
                       phone_extracted_from_company: 'Contact numbers found inside Company Name were moved into the Phone column',
@@ -408,10 +424,12 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
                     };
                     const label = descriptions[action] || action.replace(/_/g, ' ');
                     return (
-                      <li key={action} className="flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
-                        <span className="font-semibold">{label}:</span>
-                        <span className="font-mono bg-white px-2 py-0.5 rounded border border-sky-200 text-sky-800 font-bold">
+                      <li key={action} className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-sky-500 shrink-0 mt-1.5"></span>
+                          <span className="text-[11px] sm:text-xs font-medium leading-snug">{label}:</span>
+                        </div>
+                        <span className="font-mono bg-white px-2 py-0.5 rounded border border-sky-200 text-sky-800 font-bold text-[10px] sm:text-[11px] shrink-0 self-start shadow-2xs">
                           {count}
                         </span>
                       </li>
@@ -421,39 +439,39 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
               </div>
 
               {/* Human-Understandable Changes Table */}
-              <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
-                <div className="bg-slate-100/80 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-700 font-mono uppercase">
+              <div className="border border-slate-200 rounded-xl sm:rounded-2xl overflow-hidden shadow-xs">
+                <div className="bg-slate-100/80 px-3 sm:px-4 py-2 sm:py-2.5 border-b border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1">
+                  <span className="text-[11px] sm:text-xs font-bold text-slate-700 font-mono uppercase">
                     Preview of Separated Records (Before → After)
                   </span>
-                  <span className="text-[11px] text-slate-500 font-mono">
+                  <span className="text-[10px] sm:text-[11px] text-slate-500 font-mono">
                     Showing first {Math.min(15, activeReviewItem.previewData?.changes?.length || 0)} changes
                   </span>
                 </div>
 
-                <div className="overflow-x-auto max-h-60">
-                  <table className="w-full text-left text-xs">
+                <div className="overflow-x-auto max-h-56 sm:max-h-60 w-full overscroll-x-contain">
+                  <table className="min-w-full text-left text-xs whitespace-nowrap">
                     <thead className="bg-slate-50 text-slate-500 font-mono uppercase text-[10px] border-b border-slate-200">
                       <tr>
-                        <th className="px-3.5 py-2">Row</th>
-                        <th className="px-3.5 py-2">Field</th>
-                        <th className="px-3.5 py-2">Original In File</th>
-                        <th className="px-3.5 py-2">Separated Clean Value</th>
-                        <th className="px-3.5 py-2">Action</th>
+                        <th className="px-3 py-2">Row</th>
+                        <th className="px-3 py-2">Field</th>
+                        <th className="px-3 py-2">Original In File</th>
+                        <th className="px-3 py-2">Separated Clean Value</th>
+                        <th className="px-3 py-2">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {(activeReviewItem.previewData?.changes || []).slice(0, 15).map((ch, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/80">
-                          <td className="px-3.5 py-2.5 font-mono text-slate-400">#{ch.source_row}</td>
-                          <td className="px-3.5 py-2.5 font-semibold text-slate-700 capitalize">{ch.field || 'Record'}</td>
-                          <td className="px-3.5 py-2.5 text-rose-700 bg-rose-50/50 font-mono font-medium max-w-xs truncate">
+                          <td className="px-3 py-2 font-mono text-slate-400">#{ch.source_row}</td>
+                          <td className="px-3 py-2 font-semibold text-slate-700 capitalize">{ch.field || 'Record'}</td>
+                          <td className="px-3 py-2 text-rose-700 bg-rose-50/50 font-mono font-medium max-w-xs truncate">
                             {ch.before}
                           </td>
-                          <td className="px-3.5 py-2.5 text-emerald-700 bg-emerald-50/50 font-mono font-medium max-w-xs truncate">
+                          <td className="px-3 py-2 text-emerald-700 bg-emerald-50/50 font-mono font-medium max-w-xs truncate">
                             {ch.after}
                           </td>
-                          <td className="px-3.5 py-2.5 text-slate-600 text-[11px]">
+                          <td className="px-3 py-2 text-slate-600 text-[11px]">
                             {ch.what_happened || ch.action}
                           </td>
                         </tr>
@@ -654,15 +672,15 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
         </div>
 
         {/* Modal Footer Actions */}
-        <footer className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+        <footer className="mt-4 sm:mt-6 pt-3 sm:pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3 shrink-0">
           {activeReviewItem ? (
             /* FOOTER: REVIEWING SINGLE FILE */
             <>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 w-full sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setActiveReviewId(null)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-medium text-slate-700 cursor-pointer transition-colors"
+                  className="flex-1 sm:flex-none px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-medium text-slate-700 cursor-pointer transition-colors text-center"
                 >
                   Cancel
                 </button>
@@ -671,7 +689,7 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
                   type="button"
                   onClick={() => handleDownloadReportPdf(activeReviewItem)}
                   disabled={downloadingReport}
-                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer shadow-xs disabled:opacity-60 transition-colors"
+                  className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer shadow-xs disabled:opacity-60 transition-colors whitespace-nowrap"
                 >
                   {downloadingReport ? (
                     <>
@@ -683,22 +701,22 @@ export default function FileUploadModal({ isOpen, onClose, onUploadSuccess }) {
                     </>
                   ) : (
                     <>
-                      <svg className="w-3.5 h-3.5 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-3.5 h-3.5 text-rose-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
                       </svg>
-                      <span>Download Audit Report (PDF)</span>
+                      <span className="truncate">Download Audit Report (PDF)</span>
                     </>
                   )}
                 </button>
               </div>
 
               {/* Save & Confirm Button with Saved Acknowledgment */}
-              <div className="ml-auto">
+              <div className="w-full sm:w-auto sm:ml-auto">
                 <button
                   type="button"
                   onClick={() => handleConfirmSingle(activeReviewItem)}
                   disabled={confirmingId === activeReviewItem.id || savedSuccessId === activeReviewItem.id || activeReviewItem.status === 'confirmed'}
-                  className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-xs sm:text-sm font-semibold shadow-md cursor-pointer transition-all active:scale-95 ${
+                  className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 sm:px-6 py-2.5 rounded-full text-xs sm:text-sm font-semibold shadow-md cursor-pointer transition-all active:scale-95 ${
                     savedSuccessId === activeReviewItem.id || activeReviewItem.status === 'confirmed'
                       ? 'bg-emerald-600 text-white ring-2 ring-emerald-300'
                       : 'bg-[#0095FF] hover:bg-[#0082de] text-white shadow-sky-500/25'

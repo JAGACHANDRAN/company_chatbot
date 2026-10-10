@@ -79,7 +79,7 @@ export default function Sidebar({
 
   return (
     <aside
-      className="w-[340px] sm:w-[360px] h-full bg-white flex flex-col overflow-hidden relative border-r border-slate-200/90 calispec-grid-pattern shrink-0 select-none shadow-[2px_0_10px_rgba(15,23,42,0.03)]"
+      className="w-[85vw] max-w-[320px] sm:w-[320px] lg:w-[300px] xl:w-[340px] h-full bg-white flex flex-col overflow-hidden relative border-r border-slate-200/90 calispec-grid-pattern shrink-0 select-none shadow-[2px_0_10px_rgba(15,23,42,0.03)]"
       data-purpose="chatbot-sidebar-container"
     >
       {/* Ambient subtle top glow */}

@@ -1,5 +1,182 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
+
+export function isMissingValue(val) {
+  if (val === null || val === undefined) return true;
+  const s = String(val).trim().toLowerCase();
+  return (
+    s === '' ||
+    s === 'nan' ||
+    s === 'null' ||
+    s === 'none' ||
+    s === '-' ||
+    s === '--' ||
+    s === 'n/a' ||
+    s === 'na' ||
+    s === 'not available' ||
+    s === 'not_available' ||
+    s === 'no data available' ||
+    s === 'undefined' ||
+    s === '.'
+  );
+}
+
+export function getCleanValue(val) {
+  return isMissingValue(val) ? null : String(val).trim();
+}
+
+/**
+ * Canonical helper on frontend (getContactValues(record)) mirroring backend get_contact_fields:
+ * email = email or email_2, phone = phone or phone_2, linkedin, city, state, designation.
+ * Missing means "", nan, null, none, "-", n/a, whitespace.
+ */
+export function getContactValues(record) {
+  if (!record || typeof record !== 'object') {
+    return {
+      company: '',
+      person: '',
+      email: null,
+      phone: null,
+      hasEmail: false,
+      hasPhone: false,
+      hasContact: false,
+      hasLinkedin: false,
+      linkedin: null,
+      city: null,
+      state: null,
+      designation: null,
+      source: null,
+    };
+  }
+
+  const containers = [
+    record,
+    record.normalized_data && typeof record.normalized_data === 'object' ? record.normalized_data : {},
+    record.data && typeof record.data === 'object' ? record.data : {},
+    record.source_fields && typeof record.source_fields === 'object' ? record.source_fields : {},
+  ];
+
+  function findFirst(keys) {
+    for (const c of containers) {
+      if (!c) continue;
+      for (const k of keys) {
+        if (k in c) {
+          const v = getCleanValue(c[k]);
+          if (v) return v;
+        }
+      }
+    }
+    return null;
+  }
+
+  const email1 = findFirst(['email', 'Email', 'email_1', 'Email 1', 'Email Address', 'mail']);
+  const email2 = findFirst(['email_2', 'Email 2']);
+  const email = email1 || email2 || null;
+
+  const phone1 = findFirst(['phone', 'Phone', 'mobile', 'Mobile', 'Mobile No.', 'contact_number', 'Contact Number', 'contact_no', 'telephone', 'tel', 'cell']);
+  const phone2 = findFirst(['phone_2', 'Phone 2', 'Contact Number 2']);
+  const phone = phone1 || phone2 || null;
+
+  const linkedin = findFirst(['linkedin', 'LinkedIn', 'LinkedIn URL', 'linkedin_url', 'LinkedIn Profile', 'linkedin_profile']);
+  const city = findFirst(['city', 'City', 'town', 'Town']);
+  const state = findFirst(['state', 'State', 'province', 'Province']);
+  const designation = findFirst(['designation', 'Designation', 'role', 'Role', 'job_title', 'title', 'Title', 'position']);
+  const company = findFirst(['company', 'Company Name', 'company_name', 'Company', 'organization', 'firm', 'business_name', 'customer']) || '';
+  const person = findFirst(['person', 'Person Name', 'person_name', 'Contact Person', 'contact_person', 'Name', 'name', 'employee_name', 'full_name', 'client_name']) || '';
+  const source = findFirst(['source_file', 'Source File', 'dataset_name', 'dataset', 'source']) || '';
+
+  const hasEmail = Boolean(email);
+  const hasPhone = Boolean(phone);
+  const hasContact = hasEmail || hasPhone;
+  const hasLinkedin = Boolean(linkedin);
+
+  return {
+    company,
+    person,
+    email,
+    phone,
+    hasEmail,
+    hasPhone,
+    hasContact,
+    hasLinkedin,
+    linkedin,
+    city,
+    state,
+    designation,
+    source,
+  };
+}
+
+export function recordToCompanyItem(r, idx) {
+  const cv = getContactValues(r);
+  const cName = cv.company || 'Company';
+  const pName = cv.person || 'No data available';
+  const pDesig = cv.designation || 'No data available';
+  const pLinkedin = cv.linkedin || 'No data available';
+  const srcFile = cv.source || 'Database';
+
+  const validNums = [];
+  if (cv.phone) validNums.push(cv.phone);
+  if (r.phone_2 && !isMissingValue(r.phone_2) && r.phone_2 !== cv.phone) {
+    validNums.push(String(r.phone_2).trim());
+  }
+
+  const validEmails = [];
+  if (cv.email) validEmails.push(cv.email);
+  if (r.email_2 && !isMissingValue(r.email_2) && r.email_2.toLowerCase() !== cv.email?.toLowerCase()) {
+    validEmails.push(String(r.email_2).trim());
+  }
+
+  const addrVal = !isMissingValue(r.address) ? String(r.address).trim() : '';
+  const cityVal = cv.city || '';
+  const stateVal = cv.state || '';
+  const locString = [addrVal, cityVal, stateVal].filter(Boolean).join(', ') || 'No data available';
+
+  const rawLines = [
+    srcFile ? `Sources: ${srcFile}` : '',
+    `Company Name: ${cName}`,
+    `Contact Person 1:`,
+    `- Name: ${pName}`,
+    `- Designation: ${pDesig}`,
+    `- Contact Number 1: ${validNums[0] || 'No data available'}`,
+    validNums[1] ? `- Contact Number 2: ${validNums[1]}` : null,
+    `- Email 1: ${validEmails[0] || 'No data available'}`,
+    validEmails[1] ? `- Email 2: ${validEmails[1]}` : null,
+    `- LinkedIn: ${pLinkedin}`,
+    addrVal ? `- Address: ${addrVal}` : null,
+    cityVal ? `- City: ${cityVal}` : null,
+    stateVal ? `- State: ${stateVal}` : null,
+  ].filter(Boolean);
+
+  return {
+    id: r.id || r._id || `rec-${idx}`,
+    record: r,
+    companyName: cName,
+    sourceFile: srcFile,
+    rawText: rawLines.join('\n'),
+    contacts: [{
+      title: 'Contact Person 1',
+      name: pName,
+      designation: pDesig,
+      linkedin: pLinkedin,
+      numbers: validNums.length > 0
+        ? validNums.map((p, pIdx) => ({ label: `Contact Number ${pIdx + 1}`, val: p }))
+        : [{ label: 'Contact Number 1', val: 'No data available' }],
+      emails: validEmails.length > 0
+        ? validEmails.map((e, eIdx) => ({ label: `Email ${eIdx + 1}`, text: e, href: `mailto:${e}` }))
+        : [{ label: 'Email 1', text: 'No data available', href: null }],
+      location: locString,
+      address: addrVal || null,
+      city: cityVal || null,
+      state: stateVal || null,
+      locations: [
+        addrVal && { label: 'Address', val: addrVal },
+        cityVal && { label: 'City', val: cityVal },
+        stateVal && { label: 'State', val: stateVal }
+      ].filter(Boolean)
+    }]
+  };
+}
 
 const FIELD_LABELS = {
   email: 'Email',
@@ -1265,7 +1442,7 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-function flattenCompaniesForExport(companies) {
+export function flattenCompaniesForExport(companies) {
   const rows = [];
   companies.forEach((comp) => {
     const sourceFile = comp.sourceFile || 'Not Available';
@@ -1614,9 +1791,9 @@ function ExportDropdown({
 
       {open && (
         <div
-          className={`absolute ${positionClasses} w-52 bg-white/98 backdrop-blur-md border border-slate-200/90 rounded-xl shadow-2xl z-50 py-1.5 animate-fadeIn`}
+          className={`absolute ${positionClasses} w-52 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 py-1.5 animate-fadeIn`}
           style={{
-            boxShadow: '0 12px 30px -4px rgba(15, 23, 42, 0.18), 0 4px 10px -2px rgba(15, 23, 42, 0.08)',
+            boxShadow: '0 12px 30px -4px rgba(15, 23, 42, 0.2), 0 4px 12px -2px rgba(15, 23, 42, 0.1)',
           }}
         >
           <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100 flex items-center justify-between">
@@ -1687,51 +1864,56 @@ function StrictCompanyCard({ company, index, totalCount, onOpenChange }) {
 
   return (
     <div
-      className="bg-white/95 backdrop-blur-md border border-sky-100 rounded-2xl p-5 sm:p-6 shadow-md transition-all hover:shadow-lg w-full max-w-3xl"
+      className="bg-white/95 backdrop-blur-md border border-sky-100 rounded-2xl p-3.5 sm:p-5 md:p-6 shadow-md transition-all hover:shadow-lg w-full max-w-3xl overflow-hidden"
       style={{
         boxShadow:
           'rgba(2, 132, 199, 0.08) 0px 10px 30px -5px, rgba(15, 23, 42, 0.04) 0px 2px 8px -2px',
       }}
     >
       {/* Company Header */}
-      <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-100">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-500 to-sky-600 text-white flex items-center justify-center shadow-sm shadow-sky-600/20">
-            <span className="material-symbols-outlined text-xl">apartment</span>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 sm:gap-3 pb-3 sm:pb-4 border-b border-slate-100 w-full">
+        <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0 flex-1 w-full">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-sky-500 to-sky-600 text-white flex items-center justify-center shadow-sm shadow-sky-600/20 shrink-0 mt-0.5 sm:mt-0">
+            <span className="material-symbols-outlined text-base sm:text-xl">apartment</span>
           </div>
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-sky-700 font-headline-xl">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-sky-700 font-headline-xl">
               Company Name
             </div>
-            <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+            <h3 className="text-sm sm:text-base md:text-lg font-bold text-slate-900 tracking-tight break-words">
               {company.companyName}
             </h3>
             {/* Source File Badge on every result */}
             {company.sourceFile ? (
-              <div className="flex items-center gap-1.5 mt-1.5 text-xs font-semibold text-sky-800 bg-sky-50 border border-sky-200 px-2.5 py-1 rounded-md w-fit shadow-2xs">
-                <span className="material-symbols-outlined text-sm text-sky-600">
+              <div className="inline-flex items-center gap-1.5 mt-1.5 text-[11px] sm:text-xs font-semibold text-sky-800 bg-sky-50 border border-sky-200 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-md max-w-full shadow-2xs min-w-0">
+                <span className="material-symbols-outlined text-xs sm:text-sm text-sky-600 shrink-0">
                   {company.sourceFile.includes('Collection:') || company.sourceFile.includes('Database:') ? 'database' : 'description'}
                 </span>
-                <span>
+                <span className="truncate max-w-full" title={company.sourceFile}>
                   {company.sourceFile.startsWith('Source:') || company.sourceFile.startsWith('Source File:')
                     ? company.sourceFile
                     : `Source: ${company.sourceFile}`}
                 </span>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 mt-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-md w-fit">
-                <span className="material-symbols-outlined text-sm text-slate-500">description</span>
-                <span>Source: Database Records</span>
+              <div className="inline-flex items-center gap-1.5 mt-1.5 text-[11px] sm:text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-md max-w-full min-w-0">
+                <span className="material-symbols-outlined text-xs sm:text-sm text-slate-500 shrink-0">description</span>
+                <span className="truncate">Source: Database Records</span>
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0 self-end sm:self-auto mt-1 sm:mt-0">
+          {totalCount != null && totalCount > 0 && (
+            <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-700 border border-sky-200/70 shadow-2xs">
+              {(index || 0) + 1} of {totalCount}
+            </span>
+          )}
           <button
             type="button"
             onClick={handleCopy}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
             title="Copy company details"
           >
             <span className="material-symbols-outlined text-sm">
@@ -1964,6 +2146,479 @@ function StrictCompanyCard({ company, index, totalCount, onOpenChange }) {
   );
 }
 
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+  isSearchable = false,
+  direction = 'auto',
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [filterQuery, setFilterQuery] = useState('');
+  const [dropdownPlacement, setDropdownPlacement] = useState(direction === 'up' ? 'up' : 'down');
+  const [maxMenuHeight, setMaxMenuHeight] = useState(240);
+  const popoverRef = useRef(null);
+
+  const updatePlacement = () => {
+    if (popoverRef.current) {
+      const rect = popoverRef.current.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || (document.documentElement ? document.documentElement.clientHeight : 800);
+      const spaceBelow = viewportHeight - rect.bottom - 16;
+      const spaceAbove = rect.top - 16;
+
+      let placement = 'down';
+      if (direction === 'up') {
+        placement = 'up';
+      } else if (direction === 'down') {
+        placement = 'down';
+      } else {
+        // Auto: flip upward if space below is constrained and above has more room
+        if (spaceBelow < 240 && spaceAbove > spaceBelow) {
+          placement = 'up';
+        } else {
+          placement = 'down';
+        }
+      }
+
+      setDropdownPlacement(placement);
+      const availableSpace = placement === 'up' ? spaceAbove : spaceBelow;
+      const searchHeaderOffset = isSearchable && options.length > 6 ? 48 : 0;
+      const calculatedMaxHeight = Math.max(160, Math.min(280, availableSpace - searchHeaderOffset));
+      setMaxMenuHeight(calculatedMaxHeight);
+    }
+  };
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
+        setIsOpen(false);
+        setFilterQuery('');
+      }
+    }
+    if (isOpen) {
+      updatePlacement();
+      document.addEventListener('mousedown', handleClickOutside);
+      window.addEventListener('scroll', updatePlacement, true);
+      window.addEventListener('resize', updatePlacement);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', updatePlacement, true);
+      window.removeEventListener('resize', updatePlacement);
+    };
+  }, [isOpen, direction]);
+
+  const selectedOption = options.find((o) => o.val === value) || options[0];
+  const isFiltered = value && value !== 'all';
+
+  const displayedOptions = isSearchable && filterQuery.trim()
+    ? options.filter((o) => o.label.toLowerCase().includes(filterQuery.toLowerCase()))
+    : options;
+
+  return (
+    <div className={`relative inline-block text-left w-full ${isOpen ? 'z-40' : 'z-10'}`} ref={popoverRef}>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          setIsOpen(!isOpen);
+        }}
+        className={`w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-xs transition active:scale-95 shadow-sm cursor-pointer group select-none ${
+          isFiltered || isOpen
+            ? 'bg-blue-50/80 border border-blue-200'
+            : 'bg-white border border-slate-200 hover:bg-slate-50'
+        }`}
+        role="button"
+        tabIndex={0}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+      >
+        <div className="flex items-center gap-1.5 min-w-0 truncate">
+          <span className={`text-xs ${isFiltered || isOpen ? 'font-bold text-blue-700' : 'font-bold text-slate-400'}`}>
+            {label}:
+          </span>
+          <span className="font-semibold text-slate-800 text-xs truncate">
+            {selectedOption ? selectedOption.label : 'All'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {selectedOption?.count != null && (
+            <span
+              className={`inline-flex items-center justify-center min-w-[20px] h-5 px-2 text-[10px] font-mono font-bold rounded-full tracking-tight ${
+                isFiltered || isOpen
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-100 text-slate-700 border border-slate-200/50'
+              }`}
+            >
+              {selectedOption.count}
+            </span>
+          )}
+          <svg
+            className={`w-3.5 h-3.5 transition-transform group-hover:translate-y-0.5 ${
+              isFiltered || isOpen ? 'text-blue-600' : 'text-slate-400'
+            } ${isOpen ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            viewBox="0 0 24 24"
+          >
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </button>
+
+      {isOpen && (
+        <div
+          className={`absolute left-0 ${
+            dropdownPlacement === 'up'
+              ? 'bottom-full mb-1.5 origin-bottom-left'
+              : 'top-full mt-1.5 origin-top-left'
+          } w-full min-w-[240px] max-w-[340px] flex flex-col bg-white border border-slate-200/90 rounded-2xl shadow-xl z-50 overflow-hidden animate-fadeIn text-xs`}
+          role="listbox"
+        >
+          {isSearchable && options.length > 6 && (
+            <div className="p-2 border-b border-slate-100 bg-slate-50/80 shrink-0">
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400">
+                  <span className="material-symbols-outlined text-[15px]">search</span>
+                </div>
+                <input
+                  type="text"
+                  value={filterQuery}
+                  onChange={(e) => setFilterQuery(e.target.value)}
+                  placeholder={`Search ${label}...`}
+                  className="w-full pl-8 pr-7 py-1.5 text-xs bg-white border border-slate-200 rounded-lg placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium text-slate-800 shadow-2xs"
+                  autoFocus
+                />
+                {filterQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setFilterQuery('')}
+                    className="absolute inset-y-0 right-0 pr-2 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">close</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div
+            className="overflow-y-auto p-1.5 space-y-0.5 overscroll-contain"
+            style={{ maxHeight: `${maxMenuHeight}px` }}
+          >
+            {displayedOptions.length === 0 ? (
+              <div className="py-4 text-center text-slate-400 text-xs font-medium">
+                No {label.toLowerCase()} found
+              </div>
+            ) : (
+              displayedOptions.map((opt) => {
+                const isSelected = opt.val === value;
+                const isDisabled = opt.count === 0 && opt.val !== 'all';
+                return (
+                  <button
+                    key={String(opt.val)}
+                    type="button"
+                    disabled={isDisabled}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onChange(opt.val);
+                      setIsOpen(false);
+                      setFilterQuery('');
+                    }}
+                    className={`w-full text-left px-2.5 py-1.5 rounded-lg flex items-center justify-between transition-colors ${
+                      isSelected
+                        ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200/60'
+                        : isDisabled
+                        ? 'text-slate-300 cursor-not-allowed'
+                        : 'text-slate-700 hover:bg-slate-50 hover:text-blue-800 cursor-pointer'
+                    }`}
+                    role="option"
+                    aria-selected={isSelected}
+                    title={opt.label}
+                  >
+                    <span className="truncate pr-2">{opt.label}</span>
+                    {opt.count != null && (
+                      <span
+                        className={`inline-flex items-center justify-center min-w-[20px] h-5 px-2 text-[10px] font-mono font-bold rounded-full tracking-tight shrink-0 ${
+                          isSelected
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-700 border border-slate-200/50'
+                        }`}
+                      >
+                        {opt.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FilterBar({
+  activeFilters,
+  onFilterChange,
+  onClearFilters,
+  facetCounts,
+  totalRecordsCount,
+  filteredCount,
+}) {
+  const hasActiveFilters =
+    activeFilters.email !== 'all' ||
+    activeFilters.phone !== 'all' ||
+    activeFilters.linkedin !== 'all' ||
+    activeFilters.city !== 'all' ||
+    activeFilters.state !== 'all' ||
+    activeFilters.designation !== 'all' ||
+    activeFilters.source !== 'all' ||
+    Boolean(activeFilters.search);
+
+  const emailOptions = [
+    { val: 'all', label: 'All', count: facetCounts.email?.all ?? 0 },
+    { val: 'has_email', label: 'Email Available', count: facetCounts.email?.has_email ?? 0 },
+    { val: 'no_email', label: 'Email Not Available', count: facetCounts.email?.no_email ?? 0 },
+  ];
+
+  const phoneOptions = [
+    { val: 'all', label: 'All', count: facetCounts.phone?.all ?? 0 },
+    { val: 'has_phone', label: 'Phone Available', count: facetCounts.phone?.has_phone ?? 0 },
+    { val: 'no_phone', label: 'Phone Not Available', count: facetCounts.phone?.no_phone ?? 0 },
+  ];
+
+  const linkedinOptions = [
+    { val: 'all', label: 'All', count: facetCounts.linkedin?.all ?? 0 },
+    { val: 'has_linkedin', label: 'LinkedIn Available', count: facetCounts.linkedin?.has_linkedin ?? 0 },
+    { val: 'no_linkedin', label: 'LinkedIn Not Available', count: facetCounts.linkedin?.no_linkedin ?? 0 },
+  ];
+
+  const cityOptions = [
+    { val: 'all', label: 'All', count: facetCounts.city?.all ?? 0 },
+    ...(facetCounts.city?.options || []),
+  ];
+
+  const stateOptions = [
+    { val: 'all', label: 'All', count: facetCounts.state?.all ?? 0 },
+    ...(facetCounts.state?.options || []),
+  ];
+
+  const designationOptions = [
+    { val: 'all', label: 'All', count: facetCounts.designation?.all ?? 0 },
+    ...(facetCounts.designation?.options || []),
+  ];
+
+  const sourceOptions = [
+    { val: 'all', label: 'All', count: facetCounts.source?.all ?? 0 },
+    ...(facetCounts.source?.options || []),
+  ];
+
+  return (
+    <section
+      className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_4px_14px_0_rgba(15,23,42,0.05)] p-3.5 transition-all duration-200 space-y-3 w-full flex flex-col"
+      data-purpose="filters-panel"
+    >
+      {/* Header: Result count, filters applied, clear filters */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2.5">
+          <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white shadow-sm shrink-0 ring-2 ring-blue-100">
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path>
+            </svg>
+          </div>
+          <div>
+            <div className="text-xs font-bold text-slate-900 tracking-tight leading-tight">
+              Showing {filteredCount} of {totalRecordsCount} records
+            </div>
+            <div className="text-[11px] font-medium text-slate-400">
+              {hasActiveFilters ? 'Filters applied' : 'All records'}
+            </div>
+          </div>
+        </div>
+
+        {hasActiveFilters && (
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium border border-slate-800 shadow-sm transition-colors active:scale-95 cursor-pointer shrink-0"
+            data-purpose="clear-filters-btn"
+            type="button"
+            onClick={onClearFilters}
+            title="Clear all active filters"
+          >
+            <svg
+              className="w-3 h-3 text-slate-300 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2.5"
+              viewBox="0 0 24 24"
+            >
+              <line x1="18" x2="6" y1="6" y2="18"></line>
+              <line x1="6" x2="18" y1="6" y2="18"></line>
+            </svg>
+            <span className="leading-none font-medium whitespace-nowrap">Clear filters</span>
+          </button>
+        )}
+      </div>
+
+      {/* Search input */}
+      <div className="relative" data-purpose="search-box">
+        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+          <svg
+            className="w-4 h-4 text-slate-500"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.2"
+            viewBox="0 0 24 24"
+          >
+            <circle cx="11" cy="11" r="7.5"></circle>
+            <line x1="16.5" x2="21" y1="16.5" y2="21"></line>
+          </svg>
+        </div>
+        <input
+          className="block w-full pl-10 pr-8 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl placeholder-slate-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-slate-900 transition-all shadow-sm font-medium"
+          placeholder="Search within results..."
+          type="search"
+          value={activeFilters.search}
+          onChange={(e) => onFilterChange('search', e.target.value)}
+        />
+        {activeFilters.search && (
+          <button
+            type="button"
+            onClick={() => onFilterChange('search', '')}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+            title="Clear search"
+          >
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              viewBox="0 0 24 24"
+            >
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Filter Parameters Stack: Full-width rows with auto-flipping dropdowns */}
+      <div className="space-y-1.5" data-purpose="filter-pills-list">
+        <FilterSelect
+          label="Email"
+          value={activeFilters.email}
+          onChange={(v) => onFilterChange('email', v)}
+          options={emailOptions}
+          direction="auto"
+        />
+        <FilterSelect
+          label="Phone"
+          value={activeFilters.phone}
+          onChange={(v) => onFilterChange('phone', v)}
+          options={phoneOptions}
+          direction="auto"
+        />
+        <FilterSelect
+          label="LinkedIn"
+          value={activeFilters.linkedin}
+          onChange={(v) => onFilterChange('linkedin', v)}
+          options={linkedinOptions}
+          direction="auto"
+        />
+        <FilterSelect
+          label="City"
+          value={activeFilters.city}
+          onChange={(v) => onFilterChange('city', v)}
+          options={cityOptions}
+          isSearchable={cityOptions.length > 8}
+          direction="auto"
+        />
+        <FilterSelect
+          label="State"
+          value={activeFilters.state}
+          onChange={(v) => onFilterChange('state', v)}
+          options={stateOptions}
+          isSearchable={stateOptions.length > 8}
+          direction="auto"
+        />
+        <FilterSelect
+          label="Designation"
+          value={activeFilters.designation}
+          onChange={(v) => onFilterChange('designation', v)}
+          options={designationOptions}
+          isSearchable={designationOptions.length > 6}
+          direction="auto"
+        />
+        <FilterSelect
+          label="Source"
+          value={activeFilters.source}
+          onChange={(v) => onFilterChange('source', v)}
+          options={sourceOptions}
+          isSearchable={sourceOptions.length > 6}
+          direction="auto"
+        />
+      </div>
+    </section>
+  );
+}
+
+function matchesRule(values, key, filterVal) {
+  if (filterVal === 'all' || !filterVal) return true;
+  if (key === 'email') {
+    return filterVal === 'has_email' ? values.hasEmail : !values.hasEmail;
+  }
+  if (key === 'phone') {
+    return filterVal === 'has_phone' ? values.hasPhone : !values.hasPhone;
+  }
+  if (key === 'contact') {
+    return filterVal === 'available' ? values.hasContact : !values.hasContact;
+  }
+  if (key === 'linkedin') {
+    return filterVal === 'has_linkedin' ? values.hasLinkedin : !values.hasLinkedin;
+  }
+  if (key === 'city') {
+    return values.city && values.city.toLowerCase() === filterVal.toLowerCase();
+  }
+  if (key === 'state') {
+    return values.state && values.state.toLowerCase() === filterVal.toLowerCase();
+  }
+  if (key === 'designation') {
+    return values.designation && values.designation.toLowerCase() === filterVal.toLowerCase();
+  }
+  if (key === 'source') {
+    return values.source && values.source.toLowerCase() === filterVal.toLowerCase();
+  }
+  if (key === 'search') {
+    const q = filterVal.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      (values.company || '').toLowerCase().includes(q) ||
+      (values.person || '').toLowerCase().includes(q) ||
+      (values.designation || '').toLowerCase().includes(q) ||
+      (values.city || '').toLowerCase().includes(q)
+    );
+  }
+  return true;
+}
+
 export default function ChatMessage({ message, onInspect, onEdit, onRunSearch }) {
   const isUser = message.role === 'user';
   const now = new Date();
@@ -1982,8 +2637,8 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
 
     return (
       <div className="flex flex-col items-end w-full group animate-fadeIn relative z-0">
-        <div className="bg-gradient-to-r from-sky-700 via-sky-600 to-blue-600 text-white rounded-2xl rounded-tr-xs p-4 shadow-md shadow-sky-900/10 border border-sky-500/30 max-w-2xl text-left">
-          <p className="font-body-md text-sm md:text-base leading-relaxed text-white selection:bg-sky-200 selection:text-sky-900">
+        <div className="bg-gradient-to-r from-sky-700 via-sky-600 to-blue-600 text-white rounded-2xl rounded-tr-xs p-3 sm:p-4 shadow-md shadow-sky-900/10 border border-sky-500/30 max-w-[90%] sm:max-w-2xl text-left break-words overflow-hidden">
+          <p className="font-body-md text-xs sm:text-sm md:text-base leading-relaxed text-white selection:bg-sky-200 selection:text-sky-900">
             {message.content}
           </p>
         </div>
@@ -2010,129 +2665,273 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
   const { error, loading, text, is_system_notice } = message;
   const [copied, setCopied] = useState(false);
 
-  const handleCopyFormatted = () => {
+  // Active filters and pagination state kept per message
+  const [activeFilters, setActiveFilters] = useState({
+    email: 'all',
+    phone: 'all',
+    linkedin: 'all',
+    city: 'all',
+    state: 'all',
+    designation: 'all',
+    source: 'all',
+    search: '',
+  });
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 9;
+
+  const handleFilterChange = (key, val) => {
+    setActiveFilters((prev) => ({ ...prev, [key]: val }));
+    setCurrentPage(1);
+  };
+
+  const handleClearFilters = () => {
+    setActiveFilters({
+      email: 'all',
+      phone: 'all',
+      linkedin: 'all',
+      city: 'all',
+      state: 'all',
+      designation: 'all',
+      source: 'all',
+      search: '',
+    });
+    setCurrentPage(1);
+  };
+
+  // Convert raw records to structured items with getContactValues
+  const recordsWithMeta = useMemo(() => {
+    if (message.data && Array.isArray(message.data) && message.data.length > 0) {
+      return message.data.map((r, idx) => ({
+        raw: r,
+        idx,
+        values: getContactValues(r),
+        companyCard: recordToCompanyItem(r, idx),
+      }));
+    }
     if (text) {
+      const parsedFromText = parseStrictCompanyText(text);
+      return parsedFromText.map((c, idx) => {
+        const firstCt = c.contacts?.[0] || {};
+        const syntheticRecord = {
+          company: c.companyName,
+          person: firstCt.name,
+          designation: firstCt.designation,
+          linkedin: firstCt.linkedin,
+          email: firstCt.emails?.[0]?.text,
+          phone: firstCt.numbers?.[0]?.val || firstCt.numbers?.[0],
+          location: firstCt.location,
+          city: firstCt.city,
+          state: firstCt.state,
+          source_file: c.sourceFile,
+        };
+        return {
+          raw: syntheticRecord,
+          idx,
+          values: getContactValues(syntheticRecord),
+          companyCard: c,
+        };
+      });
+    }
+    return [];
+  }, [message.data, text]);
+
+  // Faceted counts and filtered list
+  const { filteredItems, facetCounts } = useMemo(() => {
+    if (recordsWithMeta.length === 0) {
+      return {
+        filteredItems: [],
+        facetCounts: {
+          email: { all: 0, has_email: 0, no_email: 0 },
+          phone: { all: 0, has_phone: 0, no_phone: 0 },
+          linkedin: { all: 0, has_linkedin: 0, no_linkedin: 0 },
+          city: { all: 0, options: [] },
+          state: { all: 0, options: [] },
+          designation: { all: 0, options: [] },
+          source: { all: 0, options: [] },
+        },
+      };
+    }
+
+    const filtered = recordsWithMeta.filter((item) => {
+      const v = item.values;
+      if (!matchesRule(v, 'email', activeFilters.email)) return false;
+      if (!matchesRule(v, 'phone', activeFilters.phone)) return false;
+      if (!matchesRule(v, 'linkedin', activeFilters.linkedin)) return false;
+      if (!matchesRule(v, 'city', activeFilters.city)) return false;
+      if (!matchesRule(v, 'state', activeFilters.state)) return false;
+      if (!matchesRule(v, 'designation', activeFilters.designation)) return false;
+      if (!matchesRule(v, 'source', activeFilters.source)) return false;
+      if (!matchesRule(v, 'search', activeFilters.search)) return false;
+      return true;
+    });
+
+    function getSubsetExcluding(key) {
+      return recordsWithMeta.filter((item) => {
+        const v = item.values;
+        const keys = ['email', 'phone', 'linkedin', 'city', 'state', 'designation', 'source', 'search'];
+        for (const k of keys) {
+          if (k === key) continue;
+          if (!matchesRule(v, k, activeFilters[k])) return false;
+        }
+        return true;
+      });
+    }
+
+    const subEmail = getSubsetExcluding('email');
+    const emailHas = subEmail.filter((x) => x.values.hasEmail).length;
+    const emailNo = subEmail.filter((x) => !x.values.hasEmail).length;
+
+    const subPhone = getSubsetExcluding('phone');
+    const phoneHas = subPhone.filter((x) => x.values.hasPhone).length;
+    const phoneNo = subPhone.filter((x) => !x.values.hasPhone).length;
+
+    const subLinkedin = getSubsetExcluding('linkedin');
+    const linkedinHas = subLinkedin.filter((x) => x.values.hasLinkedin).length;
+    const linkedinNo = subLinkedin.filter((x) => !x.values.hasLinkedin).length;
+
+    const subCity = getSubsetExcluding('city');
+    const cityMap = new Map();
+    subCity.forEach((x) => {
+      if (x.values.city) {
+        cityMap.set(x.values.city, (cityMap.get(x.values.city) || 0) + 1);
+      }
+    });
+    const cityOptions = Array.from(cityMap.entries())
+      .map(([val, count]) => ({ val, label: val, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    const subState = getSubsetExcluding('state');
+    const stateMap = new Map();
+    subState.forEach((x) => {
+      if (x.values.state) {
+        stateMap.set(x.values.state, (stateMap.get(x.values.state) || 0) + 1);
+      }
+    });
+    const stateOptions = Array.from(stateMap.entries())
+      .map(([val, count]) => ({ val, label: val, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    const subDesig = getSubsetExcluding('designation');
+    const desigMap = new Map();
+    subDesig.forEach((x) => {
+      if (x.values.designation) {
+        desigMap.set(x.values.designation, (desigMap.get(x.values.designation) || 0) + 1);
+      }
+    });
+    const desigOptions = Array.from(desigMap.entries())
+      .map(([val, count]) => ({ val, label: val, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    const subSource = getSubsetExcluding('source');
+    const sourceMap = new Map();
+    subSource.forEach((x) => {
+      if (x.values.source) {
+        sourceMap.set(x.values.source, (sourceMap.get(x.values.source) || 0) + 1);
+      }
+    });
+    const sourceOptions = Array.from(sourceMap.entries())
+      .map(([val, count]) => ({ val, label: val, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    return {
+      filteredItems: filtered,
+      facetCounts: {
+        email: { all: subEmail.length, has_email: emailHas, no_email: emailNo },
+        phone: { all: subPhone.length, has_phone: phoneHas, no_phone: phoneNo },
+        linkedin: { all: subLinkedin.length, has_linkedin: linkedinHas, no_linkedin: linkedinNo },
+        city: { all: subCity.length, options: cityOptions },
+        state: { all: subState.length, options: stateOptions },
+        designation: { all: subDesig.length, options: desigOptions },
+        source: { all: subSource.length, options: sourceOptions },
+      },
+    };
+  }, [recordsWithMeta, activeFilters]);
+
+  // Paginated items (25 items per page)
+  const totalFiltered = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedItems = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filteredItems.slice(start, start + pageSize);
+  }, [filteredItems, safePage, pageSize]);
+
+  // Export filtered companies
+  const filteredCompanies = useMemo(() => {
+    return filteredItems.map((x) => x.companyCard);
+  }, [filteredItems]);
+
+  const hasFilterActive =
+    activeFilters.email !== 'all' ||
+    activeFilters.phone !== 'all' ||
+    activeFilters.linkedin !== 'all' ||
+    activeFilters.city !== 'all' ||
+    activeFilters.state !== 'all' ||
+    activeFilters.designation !== 'all' ||
+    activeFilters.source !== 'all' ||
+    Boolean(activeFilters.search);
+
+  const exportLabel = hasFilterActive
+    ? `Exporting ${totalFiltered} filtered records`
+    : totalFiltered > 1
+    ? 'Export All'
+    : 'Export Response';
+
+  const handleCopyFormatted = () => {
+    const linesToCopy = filteredCompanies
+      .map((c) => c.rawText)
+      .filter(Boolean)
+      .join('\n\n---\n\n');
+
+    if (linesToCopy) {
+      navigator.clipboard?.writeText(linesToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else if (text) {
       navigator.clipboard?.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
-  // Build parsed companies list with 100% accurate source file per company
-  let parsedCompanies = [];
-
-  if (message.data && Array.isArray(message.data) && message.data.length > 0) {
-    const seenExactSignatures = new Set();
-    const groupMap = new Map();
-
-    message.data.forEach((r) => {
-      const cName = r.company || r['Company Name'] || r.company_name || 'Company';
-      const pName = r.person || r['Person Name'] || r['Contact Person'] || r['name'] || 'No data available';
-      const pDesig = r.designation || r['Designation'] || r['Role'] || 'No data available';
-      const pLinkedin = r.linkedin || r['LinkedIn'] || r['LinkedIn URL'] || 'No data available';
-      const srcFile = r.source_file || r['Source File'] || r.dataset_name || r.dataset || 'Database';
-
-      const rawNums = [r.phone, r.phone_2, r['Contact Number'], r['Phone 2'], r['Mobile'], r['Contact Number 1'], r['Contact Number 2']];
-      const validNums = [];
-      const seenNums = new Set();
-      for (const n of rawNums) {
-        if (n && n !== 'No data available' && n !== 'Not Available' && !seenNums.has(n)) {
-          seenNums.add(n);
-          validNums.push(n);
-        }
-      }
-
-      const rawEmails = [r.email, r.email_2, r['Email 1'], r['Email 2'], r['Email'], r['Email Address']];
-      const validEmails = [];
-      const seenEmails = new Set();
-      for (const e of rawEmails) {
-        if (e && e !== 'No data available' && e !== 'Not Available' && !seenEmails.has(e.toLowerCase())) {
-          seenEmails.add(e.toLowerCase());
-          validEmails.push(e);
-        }
-      }
-
-      const addrVal = r.address && r.address !== 'No data available' ? r.address : '';
-      const cityVal = r.city && r.city !== 'No data available' ? r.city : '';
-      const stateVal = r.state && r.state !== 'No data available' ? r.state : '';
-      const locString = [addrVal, cityVal, stateVal].filter(Boolean).join(', ') || 'No data available';
-
-      // Exact duplicate check
-      const exactSig = `${cName.toLowerCase()}::${locString.toLowerCase()}::${pName.toLowerCase()}::${pDesig.toLowerCase()}::${pLinkedin.toLowerCase()}::${validEmails.join(',')}::${validNums.join(',')}::${srcFile.toLowerCase()}`;
-      if (seenExactSignatures.has(exactSig)) {
-        return;
-      }
-      seenExactSignatures.add(exactSig);
-
-      // Group key: same company name AND exact same location
-      const groupKey = `${cName.toLowerCase().trim()}::${locString.toLowerCase().trim()}::${srcFile.toLowerCase().trim()}`;
-
-      const contactObj = {
-        title: 'Contact Person 1',
-        name: pName,
-        designation: pDesig,
-        linkedin: pLinkedin,
-        numbers: validNums.length > 0
-          ? validNums.map((p, pIdx) => ({ label: `Contact Number ${pIdx + 1}`, val: p }))
-          : [{ label: 'Contact Number 1', val: 'No data available' }],
-        emails: validEmails.length > 0
-          ? validEmails.map((e, eIdx) => ({ label: `Email ${eIdx + 1}`, text: e, href: `mailto:${e}` }))
-          : [{ label: 'Email 1', text: 'No data available', href: null }],
-        location: locString,
-        locations: [
-          addrVal && { label: 'Address', val: addrVal },
-          cityVal && { label: 'City', val: cityVal },
-          stateVal && { label: 'State', val: stateVal }
-        ].filter(Boolean)
-      };
-
-      if (groupMap.has(groupKey)) {
-        const existingComp = groupMap.get(groupKey);
-        contactObj.title = `Contact Person ${existingComp.contacts.length + 1}`;
-        existingComp.contacts.push(contactObj);
-      } else {
-        const newComp = {
-          companyName: cName,
-          sourceFile: srcFile,
-          rawText: text,
-          contacts: [contactObj]
-        };
-        groupMap.set(groupKey, newComp);
-        parsedCompanies.push(newComp);
-      }
-    });
-  } else if (text) {
-    parsedCompanies = parseStrictCompanyText(text);
-  }
+  const botHeader = (
+    <div className="flex items-center gap-2.5 mb-2 pl-1 shrink-0">
+      <div className="w-7 h-7 rounded-full bg-sky-600 text-white flex items-center justify-center shadow-md">
+        <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>
+          smart_toy
+        </span>
+      </div>
+      <span className="font-headline-xl text-xs font-bold text-slate-800 tracking-wide">
+        Calispec chatbot
+      </span>
+      <span className="font-label-sm text-[10px] text-slate-400">{timeStr}</span>
+    </div>
+  );
 
   return (
-    <div className={`flex flex-col items-start w-full animate-fadeIn relative ${hasOpenDropdown ? 'z-40' : 'z-10'}`}>
-      {/* Bot Header Line */}
-      <div className="flex items-center gap-2.5 mb-2 pl-1">
-        <div className="w-7 h-7 rounded-full bg-sky-600 text-white flex items-center justify-center shadow-md">
-          <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>
-            smart_toy
-          </span>
-        </div>
-        <span className="font-headline-xl text-xs font-bold text-slate-800 tracking-wide">
-          Calispec chatbot
-        </span>
-        <span className="font-label-sm text-[10px] text-slate-400">{timeStr}</span>
-      </div>
+    <div className={`flex flex-col items-start w-full relative ${hasOpenDropdown ? 'z-40' : 'z-10'}`}>
+      {/* Bot Header Line (only here when there are no records with sidebar) */}
+      {recordsWithMeta.length === 0 && botHeader}
 
       {/* Loading State */}
       {loading && (
-        <div
-          className="bg-white/95 backdrop-blur-md border border-sky-100 shadow-md text-slate-800 rounded-2xl p-6 w-full max-w-3xl flex items-center gap-3"
-          style={{
-            boxShadow:
-              'rgba(2, 132, 199, 0.08) 0px 10px 30px -5px, rgba(15, 23, 42, 0.04) 0px 2px 8px -2px',
-          }}
-        >
-          <span className="material-symbols-outlined text-sky-600 animate-spin text-xl">
-            progress_activity
-          </span>
-          <span className="text-sm font-label-sm text-slate-600">
+        <div className="flex items-center gap-3 py-2 px-1 text-slate-700 animate-fadeIn">
+          {/* Three pulsing blue dots */}
+          <div className="flex items-center gap-1.5 shrink-0" aria-label="Searching">
+            <span
+              className="w-2.5 h-2.5 rounded-full bg-sky-600 animate-bounce"
+              style={{ animationDelay: '0ms', animationDuration: '0.8s' }}
+            />
+            <span
+              className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-bounce"
+              style={{ animationDelay: '160ms', animationDuration: '0.8s' }}
+            />
+            <span
+              className="w-2.5 h-2.5 rounded-full bg-sky-300 animate-bounce"
+              style={{ animationDelay: '320ms', animationDuration: '0.8s' }}
+            />
+          </div>
+          <span className="text-sm font-headline-xl font-medium text-slate-700 tracking-normal">
             Searching database records...
           </span>
         </div>
@@ -2168,83 +2967,214 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
         </div>
       )}
 
-      {/* Normal Query Response - Strict Formatted Structure */}
+      {/* Normal Query Response */}
       {!loading && !error && !is_system_notice && (
         <div className="space-y-4 w-full">
-          {parsedCompanies.length > 0 ? (
-            /* Render Previous Structured UI Cards for Companies (StrictCompanyCard) */
-            <div className="space-y-4 w-full">
-
-              {parsedCompanies.map((comp, idx) => (
-                <StrictCompanyCard
-                  key={idx}
-                  company={comp}
-                  index={idx}
-                  totalCount={parsedCompanies.length}
-                  onOpenChange={setHasOpenDropdown}
+          {recordsWithMeta.length > 0 ? (
+            <div className="w-full flex flex-col md:flex-row items-start gap-4 lg:gap-6 pb-2 sm:pb-4">
+              {/* Left Column: Fully static/constant Filter Sidebar */}
+              <aside className="w-full md:w-72 lg:w-72 xl:w-80 shrink-0 md:sticky md:top-2 md:self-start z-20">
+                <FilterBar
+                  activeFilters={activeFilters}
+                  onFilterChange={handleFilterChange}
+                  onClearFilters={handleClearFilters}
+                  facetCounts={facetCounts}
+                  totalRecordsCount={recordsWithMeta.length}
+                  filteredCount={totalFiltered}
                 />
-              ))}
+              </aside>
 
-              {/* If some companies were not found in multi-company search */}
-              {message.not_found && message.not_found.length > 0 && (
-                <div className="p-4 rounded-xl bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 space-y-2">
-                  <p className="font-semibold">
-                    No records found for: {message.not_found.map(n => `"${n}"`).join(', ')}
-                  </p>
-                  {message.suggestions && Object.keys(message.suggestions).length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      <span className="text-slate-500 font-medium">Suggestions:</span>
-                      {Object.entries(message.suggestions).map(([k, sugs]) =>
-                        sugs.map((sug, sIdx) => (
+              {/* Right Column: Search Results, Cards & Pagination (Normal natural scrolling) */}
+              <div className="flex-1 min-w-0 w-full max-w-3xl space-y-3.5">
+                {/* Bot Header Line - positioned right on top of results, not above filters */}
+                {botHeader}
+
+                {totalFiltered === 0 ? (
+                  /* No records matching current active filters */
+                  <div className="bg-white border border-slate-200 rounded-2xl p-6 text-center space-y-3 shadow-xs w-full">
+                    <div className="w-10 h-10 mx-auto rounded-full bg-slate-100 text-slate-500 flex items-center justify-center">
+                      <span className="material-symbols-outlined text-xl">filter_alt_off</span>
+                    </div>
+                    <h4 className="font-bold text-slate-800 text-sm font-headline-xl">No records match these filters</h4>
+                    <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                      Try adjusting or clearing your active filters to view results.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleClearFilters}
+                      className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-medium text-xs shadow-xs cursor-pointer inline-flex items-center gap-1.5 font-headline-xl"
+                    >
+                      <span className="material-symbols-outlined text-xs">refresh</span>
+                      <span>Clear filters</span>
+                    </button>
+                  </div>
+                ) : (
+                  /* Integrated Results Section with Unified Header Bar, Cards, and Footer */
+                  <div className="bg-white border border-slate-800/80 rounded-2xl shadow-xl shadow-slate-900/5 overflow-hidden w-full max-w-3xl">
+                    {/* Unified Top Results & Sliding Pagination Toolbar - Header */}
+                    <div className="bg-[#0b1329] border-b border-slate-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-white w-full">
+                      {/* Records Count Info */}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="inline-block w-2 h-2 rounded-full bg-[#0284c7] shadow-[0_0_8px_rgba(2,132,199,0.8)] shrink-0"></span>
+                        <div className="text-[13px] leading-tight truncate text-slate-300">
+                          Showing <span className="font-bold text-white tracking-tight">{(safePage - 1) * pageSize + 1} – {Math.min(safePage * pageSize, totalFiltered)}</span> <span className="text-slate-400">of</span> <span className="font-bold text-white tracking-tight">{totalFiltered}</span> records
+                        </div>
+                      </div>
+
+                      {/* Controls Group */}
+                      {totalPages > 1 && (
+                        <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                          {/* Prev Button */}
                           <button
-                            key={`${k}-${sIdx}`}
                             type="button"
-                            onClick={() => onRunSearch?.(sug)}
-                            className="px-2.5 py-0.5 rounded-full bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-semibold shadow-2xs cursor-pointer"
+                            disabled={safePage <= 1}
+                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-300 hover:text-white text-xs font-semibold tracking-tight transition-all border border-slate-700/60 shadow-sm flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-slate-800/90 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer"
+                            title="Previous page"
                           >
-                            {sug}
+                            <span className="text-[11px] opacity-80">&lsaquo;</span>
+                            <span>Prev</span>
                           </button>
-                        ))
+
+                          {/* Current Page Indicator / Stepper */}
+                          <div className="px-2.5 py-1.5 rounded-lg bg-[#070d1e] border border-slate-800/90 text-center min-w-[50px] shadow-inner select-none">
+                            <span className="text-xs font-bold tracking-wide text-sky-400">{safePage}</span>
+                            <span className="text-slate-500 text-[11px] mx-0.5 font-normal">/</span>
+                            <span className="text-slate-400 text-xs font-semibold">{totalPages}</span>
+                          </div>
+
+                          {/* Next Button */}
+                          <button
+                            type="button"
+                            disabled={safePage >= totalPages}
+                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                            className="px-3 py-1.5 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] active:scale-95 text-white text-xs font-semibold tracking-tight transition-all shadow-md shadow-sky-950/40 border border-sky-400/30 flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-[#0284c7] disabled:cursor-not-allowed cursor-pointer"
+                            title="Next page"
+                          >
+                            <span>Next</span>
+                            <span className="text-[11px] opacity-90">&rsaquo;</span>
+                          </button>
+                        </div>
                       )}
                     </div>
-                  )}
-                </div>
-              )}
 
-              {/* Bot Response Bottom Action Toolbar for the entire response */}
-              <div className="flex items-center justify-between gap-3 pt-1 px-1 text-slate-500 w-full max-w-3xl">
-                <div className="text-[11px] text-slate-400 font-medium">
-                  {parsedCompanies.length > 1 ? (
-                    <span>{parsedCompanies.length} companies retrieved</span>
-                  ) : null}
-                </div>
+                    {/* Cards Stack directly attached with no gap */}
+                    <div className="p-3 sm:p-3.5 space-y-3 bg-slate-50/40">
+                      {paginatedItems.map((item, idx) => (
+                        <StrictCompanyCard
+                          key={item.id || idx}
+                          company={item.companyCard}
+                          index={(safePage - 1) * pageSize + idx}
+                          totalCount={totalFiltered}
+                          onOpenChange={setHasOpenDropdown}
+                        />
+                      ))}
+                    </div>
 
-                <div className="flex items-center gap-2 ml-auto">
-                  <button
-                    type="button"
-                    onClick={handleCopyFormatted}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
-                    title="Copy entire response"
-                  >
-                    <span className="material-symbols-outlined text-sm">
-                      {copied ? 'check' : 'content_copy'}
-                    </span>
-                    <span>{copied ? 'Copied' : 'Copy Response'}</span>
-                  </button>
+                    {/* Integrated Bottom Pagination Footer if multiple pages */}
+                    {totalPages > 1 && (
+                      <div className="bg-[#0b1329] border-t border-slate-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-white w-full">
+                        <div className="text-[13px] text-slate-300 leading-tight">
+                          Page <span className="font-bold text-white tracking-tight">{safePage}</span> <span className="text-slate-400">of</span> <span className="font-bold text-white tracking-tight">{totalPages}</span> <span className="text-slate-400">({totalFiltered} total records)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                          <button
+                            type="button"
+                            disabled={safePage <= 1}
+                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-300 hover:text-white text-xs font-semibold tracking-tight transition-all border border-slate-700/60 shadow-sm flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-slate-800/90 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer"
+                            title="Previous page"
+                          >
+                            <span className="text-[11px] opacity-80">&lsaquo;</span>
+                            <span>Prev</span>
+                          </button>
 
-                  <ExportDropdown
-                    companies={parsedCompanies}
-                    filename="calispec_response_data"
-                    label={parsedCompanies.length > 1 ? "Export All" : "Export Response"}
-                    direction="up"
-                    onOpenChange={setHasOpenDropdown}
-                  />
+                          <div className="px-2.5 py-1.5 rounded-lg bg-[#070d1e] border border-slate-800/90 text-center min-w-[50px] shadow-inner select-none">
+                            <span className="text-xs font-bold tracking-wide text-sky-400">{safePage}</span>
+                            <span className="text-slate-500 text-[11px] mx-0.5 font-normal">/</span>
+                            <span className="text-slate-400 text-xs font-semibold">{totalPages}</span>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={safePage >= totalPages}
+                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                            className="px-3 py-1.5 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] active:scale-95 text-white text-xs font-semibold tracking-tight transition-all shadow-md shadow-sky-950/40 border border-sky-400/30 flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-[#0284c7] disabled:cursor-not-allowed cursor-pointer"
+                            title="Next page"
+                          >
+                            <span>Next</span>
+                            <span className="text-[11px] opacity-90">&rsaquo;</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Suggestions for unfound companies */}
+                {message.not_found && message.not_found.length > 0 && (
+                  <div className="p-4 rounded-xl bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 space-y-2 w-full">
+                    <p className="font-semibold">
+                      No records found for: {message.not_found.map((n) => `"${n}"`).join(', ')}
+                    </p>
+                    {message.suggestions && Object.keys(message.suggestions).length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        <span className="text-slate-500 font-medium">Suggestions:</span>
+                        {Object.entries(message.suggestions).map(([k, sugs]) =>
+                          sugs.map((sug, sIdx) => (
+                            <button
+                              key={`${k}-${sIdx}`}
+                              type="button"
+                              onClick={() => onRunSearch?.(sug)}
+                              className="px-2.5 py-0.5 rounded-full bg-white hover:bg-sky-50 text-sky-700 border border-sky-200 font-semibold shadow-2xs cursor-pointer"
+                            >
+                              {sug}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Bot Response Bottom Action Toolbar */}
+                <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1 px-1 text-slate-500 w-full">
+                  <div className="text-[11px] text-slate-400 font-medium">
+                    {totalFiltered > 0 ? (
+                      <span>
+                        {totalFiltered} {totalFiltered === 1 ? 'record' : 'records'} retrieved
+                        {hasFilterActive ? ` (filtered from ${recordsWithMeta.length})` : ''}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      onClick={handleCopyFormatted}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-sky-50 hover:text-sky-700 border border-slate-200 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
+                      title="Copy response"
+                    >
+                      <span className="material-symbols-outlined text-sm">
+                        {copied ? 'check' : 'content_copy'}
+                      </span>
+                      <span>{copied ? 'Copied' : 'Copy'}</span>
+                    </button>
+
+                    <ExportDropdown
+                      companies={filteredCompanies}
+                      filename="calispec_response_data"
+                      label={exportLabel}
+                      direction="up"
+                      onOpenChange={setHasOpenDropdown}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
           ) : message.not_found && message.not_found.length > 0 ? (
-            /* Render Not Found Banner if no companies parsed */
-            <div className="bg-gradient-to-r from-amber-50/90 to-sky-50/60 border border-amber-200/80 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+            /* Render Not Found Banner */
+            <div className="bg-gradient-to-r from-amber-50/90 to-sky-50/60 border border-amber-200/80 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4 w-full max-w-3xl">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 border border-amber-300/60 shadow-2xs">
                   <span className="material-symbols-outlined text-xl">travel_explore</span>

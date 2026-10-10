@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from collections import Counter
 from typing import List, Dict, Any, Optional
 from ..config import (
     PRIVACY_MODE,
@@ -9,7 +10,7 @@ from ..config import (
     LLM_MODEL,
 )
 from .query_understanding import StructuredQuery, FollowupFilter
-from ..utils.normalization import normalize_company_name, normalize_person_name
+from ..utils.normalization import normalize_company_name, normalize_person_name, normalize_company
 from .source_resolver import (
     get_record_sources,
     get_record_source_display,
@@ -676,18 +677,21 @@ def group_and_deduplicate_records(
             if structured_query.linkedin_required is False and fields["linkedin"]:
                 continue
 
-        # Exact duplicate check (all field values matched samely)
+        # Exact duplicate check (include _id when available so distinct DB docs are never dropped)
+        rec_id = str(rec.get("_id") or "")
         exact_sig = (
-            c_name.lower().strip(),
-            addr.lower().strip(),
-            city.lower().strip(),
-            state.lower().strip(),
-            p_name.lower().strip(),
-            p_desig.lower().strip(),
-            p_linkedin.lower().strip(),
-            ", ".join(sorted(p_emails)),
-            ", ".join(sorted(re.sub(r'\D', '', n) for n in p_nums)),
-            rec_source.lower().strip()
+            rec_id if rec_id else (
+                c_name.lower().strip(),
+                addr.lower().strip(),
+                city.lower().strip(),
+                state.lower().strip(),
+                p_name.lower().strip(),
+                p_desig.lower().strip(),
+                p_linkedin.lower().strip(),
+                ", ".join(sorted(p_emails)),
+                ", ".join(sorted(re.sub(r'\D', '', n) for n in p_nums)),
+                rec_source.lower().strip()
+            )
         )
         if exact_sig in seen_exact_signatures:
             continue
@@ -707,7 +711,9 @@ def group_and_deduplicate_records(
             "state": state if state != "No data available" else None,
         }
 
-        if group_key in group_lookup:
+        # If both contacts have no person name and no contact info, keep them as separate company blocks
+        has_real_contact = (p_name != "No data available" and p_name != "Not Available") or bool(p_nums) or bool(p_emails)
+        if group_key in group_lookup and has_real_contact:
             group_lookup[group_key]["contacts"].append(contact_entry)
         else:
             comp_group = {
@@ -719,10 +725,38 @@ def group_and_deduplicate_records(
                 "state": state,
                 "contacts": [contact_entry]
             }
-            group_lookup[group_key] = comp_group
+            if has_real_contact:
+                group_lookup[group_key] = comp_group
             grouped_companies.append(comp_group)
 
     return grouped_companies
+
+
+def report_database_duplicates(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Bug A Step 3:
+    Separately reports how many records have an identical (norm_company, contact person, email, phone)
+    in the database, so developers can see whether the DB itself holds duplicates.
+    Does NOT delete anything; just reports.
+    """
+    sig_counts = Counter()
+    for rec in records:
+        f = get_contact_fields(rec)
+        norm_c = normalize_company(f["company"])
+        p_name = (f["contact_persons"][0] if f["contact_persons"] else "").strip().lower()
+        e_mail = (f["emails"][0] if f["emails"] else "").strip().lower()
+        p_phone = re.sub(r"\D", "", f["phones"][0]) if f["phones"] else ""
+        sig = (norm_c, p_name, e_mail, p_phone)
+        sig_counts[sig] += 1
+
+    duplicate_groups = {str(k): count for k, count in sig_counts.items() if count > 1}
+    total_dup_records = sum(count for count in sig_counts.values() if count > 1)
+    return {
+        "total_records_checked": len(records),
+        "duplicate_groups_count": len(duplicate_groups),
+        "total_records_in_duplicate_groups": total_dup_records,
+        "duplicate_signatures": duplicate_groups
+    }
 
 
 def format_strict_company_records(
@@ -731,140 +765,150 @@ def format_strict_company_records(
 ) -> str:
     """
     STRICT RESPONSE FORMATTER for retrieved company/contact data.
-    - Groups contacts for the SAME company and EXACT SAME location under a single Company block.
-    - Keeps companies with different locations separated.
-    - Eliminates exact duplicate records where all field values match.
+    - Formats every unique document (by str(_id)) into its own card block so that:
+      header count == cards shown == raw distinct count == export count.
+    - Eliminates any later deduplication in display code that hides rows silently.
     """
     if not records:
         return "No data found"
 
-    # If user asked for field-only projection ('alone', 'only', 'just'), counts, or missing fields:
+    # If user asked for field-only projection ('alone', 'only', 'just') with specific fields, counts, or missing fields:
+    has_specific_field_projection = bool(
+        structured_query and structured_query.requested_fields and not (
+            structured_query.email_required is True or structured_query.phone_required is True or structured_query.linkedin_required is True
+        )
+    )
     should_use_field_layout = bool(
         structured_query and (
-            structured_query.is_only_fields
+            has_specific_field_projection
             or structured_query.is_count_query
-            or structured_query.missing_filter
-            or (structured_query.requested_fields and not (structured_query.email_required is True or structured_query.phone_required is True or structured_query.linkedin_required is True))
+            or bool(structured_query.missing_filter)
         )
     )
     if should_use_field_layout:
         return format_field_specific_answer(records, structured_query)
 
-    grouped = group_and_deduplicate_records(records, structured_query=structured_query)
-    if not grouped:
+    # Deduplicate strictly by str(_id)
+    seen_ids = set()
+    deduped_records = []
+    for r in records:
+        rid = str(r.get("_id") or id(r))
+        if rid not in seen_ids:
+            seen_ids.add(rid)
+            deduped_records.append(r)
+
+    if not deduped_records:
         return "No data found"
 
     formatted_entries = []
 
-    for comp in grouped:
-        c_name = comp["company"]
-        rec_source = comp["source_file"]
-        contacts = comp["contacts"]
+    for rec in deduped_records:
+        f = get_contact_fields(rec)
+        c_name = f["company"]
+        rec_source = f["dataset_name"]
+        p_name = f["contact_persons"][0] if f["contact_persons"] else "No data available"
+        p_desig = f["designations"][0] if f["designations"] else "No data available"
+        p_linkedin = f["linkedin"][0] if f["linkedin"] else "No data available"
+        phones = f["phones"]
+        emails = f["emails"]
 
         entry_lines = []
         entry_lines.append(f"Source File: {rec_source}")
         entry_lines.append(f"Company Name: {c_name}")
+        entry_lines.append(f"Contact Person 1:")
+        entry_lines.append(f"- Name: {p_name}")
+        entry_lines.append(f"- Designation: {p_desig}")
+        entry_lines.append(f"- LinkedIn: {p_linkedin}")
 
-        for c_idx, ct in enumerate(contacts, 1):
-            entry_lines.append(f"Contact Person {c_idx}:")
-            entry_lines.append(f"- Name: {ct['name']}")
-            entry_lines.append(f"- Designation: {ct['designation']}")
-            entry_lines.append(f"- LinkedIn: {ct['linkedin']}")
+        if phones:
+            for p_i, ph in enumerate(phones, 1):
+                label = f"- Contact Number {p_i}:" if len(phones) > 1 else "- Contact Number 1:"
+                entry_lines.append(f"{label} {ph}")
+        else:
+            entry_lines.append("- Contact Number 1: No data available")
 
-            if ct["phones"]:
-                for n_idx, num in enumerate(ct["phones"], 1):
-                    label = f"- Contact Number {n_idx}:" if len(ct["phones"]) > 1 or len(contacts) > 1 else "- Contact Number 1:"
-                    entry_lines.append(f"{label} {num}")
-            else:
-                entry_lines.append("- Contact Number 1: No data available")
+        if emails:
+            for e_i, em in enumerate(emails, 1):
+                label = f"- Email {e_i}:" if len(emails) > 1 else "- Email 1:"
+                entry_lines.append(f"{label} {em}")
+        else:
+            entry_lines.append("- Email 1: No data available")
 
-            if ct["emails"]:
-                for e_idx, em in enumerate(ct["emails"], 1):
-                    label = f"- Email {e_idx}:" if len(ct["emails"]) > 1 or len(contacts) > 1 else "- Email 1:"
-                    entry_lines.append(f"{label} {em}")
-            else:
-                entry_lines.append("- Email 1: No data available")
-
-            loc_dict = {
-                "address": ct["address"],
-                "city": ct["city"],
-                "state": ct["state"],
-            }
-            loc_lines = format_location_lines(loc_dict, prefix="- ")
-            entry_lines.extend(loc_lines)
+        loc_dict = {
+            "address": f["address"] if f["address"] != "No data available" else None,
+            "city": f["city"] if f["city"] != "No data available" else None,
+            "state": f["state"] if f["state"] != "No data available" else None,
+        }
+        loc_lines = format_location_lines(loc_dict, prefix="- ")
+        entry_lines.extend(loc_lines)
 
         formatted_entries.append("\n".join(entry_lines))
 
     return "\n\n---\n\n".join(formatted_entries).strip()
 
 
-def generate_no_data_message(user_query: str, structured_query: Optional[StructuredQuery] = None) -> str:
+def generate_no_data_message(
+    user_query: str,
+    structured_query: Optional[StructuredQuery] = None,
+    suggestions: Optional[List[str]] = None
+) -> str:
     """
-    Generates deterministic, truthful, zero-hallucination no-data explanations
-    matching the user's specific query parameters.
+    Generates professional, clear, zero-hallucination no-data explanations
+    explaining that files in the database were searched and the entity was not found.
     """
-    if not structured_query:
-        return "No matching records found in the database."
+    if not structured_query or not (structured_query.companies or structured_query.people or structured_query.designation or structured_query.location or structured_query.city or structured_query.state):
+        clean_q = user_query.strip()
+        msg = f"I searched across all uploaded files in the database, but no records or contact details regarding '{clean_q}' were found."
+        if suggestions:
+            msg += f" Did you mean: {', '.join(suggestions)}?"
+        return msg
 
-    subject_parts = []
-
-    # Check designation vs person vs company
-    if structured_query.designation:
-        desig = structured_query.designation.strip()
-        # Respect plural wording in query if present
-        if "managers" in user_query.lower() and desig.lower().endswith("manager"):
-            subject_parts.append(f"{desig}s")
-        elif "heads" in user_query.lower() and desig.lower().endswith("head"):
-            subject_parts.append(f"{desig}s")
-        elif "directors" in user_query.lower() and desig.lower().endswith("director"):
-            subject_parts.append(f"{desig}s")
-        elif "officers" in user_query.lower() and desig.lower().endswith("officer"):
-            subject_parts.append(f"{desig}s")
-        else:
-            subject_parts.append(desig)
+    target_entity = None
+    if structured_query.companies:
+        target_entity = ", ".join(structured_query.companies)
     elif structured_query.people:
-        subject_parts.append(", ".join(structured_query.people))
-    elif structured_query.companies:
-        comps = ", ".join(structured_query.companies)
-        if "companies" in user_query.lower() or "group" in user_query.lower():
-            subject_parts.append(f"{comps} companies")
-        elif "company" in user_query.lower():
-            subject_parts.append(f"{comps} company")
-        else:
-            subject_parts.append(f"{comps} companies")
-    else:
-        subject_parts.append("companies")
-
-    # At company (if designation or person was specified)
-    if structured_query.companies and (structured_query.designation or structured_query.people):
-        subject_parts.append(f"at {', '.join(structured_query.companies)}")
-
-    # Location (City, State, Location)
-    if structured_query.city:
-        subject_parts.append(f"in {structured_query.city}")
+        target_entity = ", ".join(structured_query.people)
+    elif structured_query.designation:
+        target_entity = structured_query.designation
+    elif structured_query.city:
+        target_entity = f"companies in {structured_query.city}"
     elif structured_query.state:
-        subject_parts.append(f"in {structured_query.state}")
+        target_entity = f"companies in {structured_query.state}"
     elif structured_query.location:
-        subject_parts.append(f"in {structured_query.location}")
+        target_entity = f"companies in {structured_query.location}"
+    else:
+        target_entity = user_query.strip()
 
-    # Availability modifiers
+    criteria = []
+    if structured_query.designation and structured_query.companies:
+        criteria.append(f"with designation '{structured_query.designation}'")
+    if structured_query.city and not target_entity.startswith("companies in"):
+        criteria.append(f"in {structured_query.city}")
+    elif structured_query.state and not target_entity.startswith("companies in"):
+        criteria.append(f"in {structured_query.state}")
+    elif structured_query.location and not target_entity.startswith("companies in"):
+        criteria.append(f"in {structured_query.location}")
+
     if structured_query.email_required is True:
-        subject_parts.append("with an available email address")
+        criteria.append("having an available email address")
     elif structured_query.email_required is False:
-        subject_parts.append("without an email address")
+        criteria.append("without an email address")
 
     if structured_query.phone_required is True:
-        subject_parts.append("with contact numbers")
+        criteria.append("having contact numbers")
     elif structured_query.phone_required is False:
-        subject_parts.append("without contact numbers")
+        criteria.append("without contact numbers")
 
     if structured_query.linkedin_required is True:
-        subject_parts.append("with a LinkedIn profile")
+        criteria.append("having a LinkedIn profile")
     elif structured_query.linkedin_required is False:
-        subject_parts.append("without a LinkedIn profile")
+        criteria.append("without a LinkedIn profile")
 
-    target_desc = " ".join(subject_parts).strip()
-    return f"No data available for {target_desc}."
+    crit_str = f" ({', '.join(criteria)})" if criteria else ""
+    msg = f"I searched across all uploaded files in the database, but no records or contact details regarding '{target_entity}'{crit_str} were found."
+    if suggestions:
+        msg += f" Did you mean: {', '.join(suggestions)}?"
+    return msg
 
 
 def deterministic_synthesize(

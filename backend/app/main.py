@@ -49,6 +49,13 @@ from .routes.chat import router as chat_router
 from .routes.datasets import router as datasets_router, alias_router
 from .routes.auth import router as auth_router, google_router
 from .routes.admin_clean import router as admin_clean_router
+from .services.observability import (
+    init_langfuse,
+    flush_langfuse,
+    shutdown_langfuse,
+    is_langfuse_enabled,
+    is_langfuse_reachable,
+)
 from .schemas import HealthResponse
 
 app = FastAPI(
@@ -108,10 +115,11 @@ async def periodic_backfill_loop():
 
 @app.on_event("startup")
 async def on_startup():
-    """Verify MongoDB Cloud connection, ensure indexes, and validate privacy config on startup."""
+    """Verify MongoDB Cloud connection, ensure indexes, validate privacy config, and initialize Langfuse."""
     print("=" * 60)
-    print("Initializing Calispec AI Search Backend (Hybrid RAG + RBAC)")
+    print("Initializing Calispec AI Search Backend (Hybrid RAG + RBAC + Observability)")
     validate_privacy_and_llm_config()
+    init_langfuse()
     db_connected, msg = check_db_connection()
     if db_connected:
         print(f"[OK] {msg}")
@@ -138,6 +146,13 @@ async def on_startup():
     asyncio.create_task(periodic_backfill_loop())
 
 
+@app.on_event("shutdown")
+def on_shutdown():
+    """Flush and shut down Langfuse background threads gracefully."""
+    flush_langfuse()
+    shutdown_langfuse()
+
+
 @app.get("/health", response_model=HealthResponse)
 def health_check():
     """Health check endpoint returning system status, MongoDB connectivity, and dataset counts."""
@@ -161,20 +176,14 @@ def health_check():
 async def rag_health_check():
     """
     RAG diagnostics endpoint for monitoring Hybrid RAG readiness.
-    Reports:
-    - MongoDB connectivity and document counts (total_docs, embedded_valid, pending, failed)
-    - Valid 768-d embeddings count
-    - Atlas Search index status & queryable state
-    - Local Ollama embedding availability
-    - Cloud LLM configuration
-    - Fallback usage flag
-    - Live test vector query performance & results
     """
     is_db_ok, db_msg = check_db_connection()
     if not is_db_ok:
         return {
             "status": "red",
             "mongo_connected": False,
+            "langfuse_enabled": is_langfuse_enabled(),
+            "langfuse_reachable": False,
             "details": db_msg,
             "total_docs": 0,
             "embedded_valid": 0,
@@ -243,6 +252,8 @@ async def rag_health_check():
     return {
         "status": overall_status,
         "mongo_connected": is_db_ok,
+        "langfuse_enabled": is_langfuse_enabled(),
+        "langfuse_reachable": is_langfuse_reachable(timeout_seconds=3.0),
         "total_docs": doc_count,
         "embedded_valid": embedded_valid,
         "pending": pending_count,

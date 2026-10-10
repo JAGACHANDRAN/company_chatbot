@@ -63,7 +63,7 @@ export default function DataView({ collections, health, onInspect }) {
   const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
   const displayedRecords = records.slice((page - 1) * pageSize, page * pageSize);
 
-  const totalMongoDocs = collections.reduce((acc, c) => acc + (c.document_count || 0), 0) || 12458;
+  const totalMongoDocs = collections.reduce((acc, c) => acc + (c.document_count || 0), 0) || totalCount || records.length || 0;
 
   return (
     <div className="atlas-data-view">
@@ -71,7 +71,7 @@ export default function DataView({ collections, health, onInspect }) {
       <div className="atlas-view-header">
         <div className="atlas-view-title-row">
           <h1 className="atlas-page-title">MongoDB Database</h1>
-          <span className="atlas-version-tag">v6.0.12 Atlas</span>
+          <span className="atlas-version-tag">MongoDB Atlas</span>
         </div>
         <p className="atlas-page-subtitle">
           View and manage the data currently available for AI search.
@@ -89,7 +89,7 @@ export default function DataView({ collections, health, onInspect }) {
             </div>
             <div>
               <div className="atlas-cluster-title">MongoDB Atlas Cluster</div>
-              <div className="atlas-cluster-host">cluster0.dflwehg.mongodb.net</div>
+              <div className="atlas-cluster-host">calispec.mongodb.net</div>
             </div>
           </div>
           <span className="atlas-connected-pill">
@@ -125,7 +125,7 @@ export default function DataView({ collections, health, onInspect }) {
                   setPage(1);
                 }}
               >
-                <option value="all">All 6 Collections ({collections.length || 6})</option>
+                <option value="all">All Collections ({collections.length})</option>
                 {collections.map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name} ({c.document_count?.toLocaleString()} docs)
@@ -279,6 +279,7 @@ export default function DataView({ collections, health, onInspect }) {
                 key={rec.id || i}
                 record={rec}
                 index={(page - 1) * pageSize + i}
+                totalCount={totalCount || records.length}
                 onInspect={onInspect}
               />
             ))}

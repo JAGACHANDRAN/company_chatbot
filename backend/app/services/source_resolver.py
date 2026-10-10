@@ -98,6 +98,13 @@ def get_dataset_name(record: Dict[str, Any]) -> str:
         if clean and clean.lower() not in NULL_INDICATORS:
             return clean
 
+    # Check if source_file was passed
+    s_file = record.get("source_file") or record.get("Source File") or record.get("Sources")
+    if s_file and isinstance(s_file, str):
+        clean = re.sub(r"\.(xlsx|xls|csv|json)$", "", str(s_file).strip(), flags=re.IGNORECASE).strip()
+        if clean and clean.lower() not in NULL_INDICATORS:
+            return clean
+
     return "No data available"
 
 

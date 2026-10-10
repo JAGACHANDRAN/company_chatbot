@@ -53,7 +53,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
 
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-start bg-[#f8fafc] calispec-blueprint-canvas px-4 pt-6 sm:pt-8 pb-12 overflow-y-auto select-none animate-fadeIn min-h-screen">
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-start bg-[#f8fafc] calispec-blueprint-canvas px-3 sm:px-4 pt-4 sm:pt-8 pb-8 overflow-y-auto select-none animate-fadeIn min-h-screen">
       {/* Background Blueprint Canvas and Radar Rings */}
       <div className="pointer-events-none fixed inset-0 z-0 flex items-center justify-center overflow-hidden">
         <div className="absolute w-[360px] h-[360px] rounded-full border border-sky-400/20 top-12" />
@@ -66,10 +66,10 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
         <button
           type="button"
           onClick={onClose}
-          className="fixed top-4 right-4 sm:top-5 sm:right-5 z-40 w-9 h-9 rounded-full bg-white/90 border border-slate-200 shadow-sm text-slate-400 hover:text-slate-800 hover:bg-white flex items-center justify-center transition-all cursor-pointer"
+          className="fixed top-4 right-4 sm:top-5 sm:right-5 z-40 w-10 h-10 rounded-full bg-white border border-sky-200 shadow-md text-[#00639b] hover:text-white hover:bg-[#00639b] hover:border-[#00639b] flex items-center justify-center transition-all duration-200 cursor-pointer group"
           title="Close"
         >
-          <span className="material-symbols-outlined text-lg">close</span>
+          <span className="material-symbols-outlined text-xl font-bold text-[#00639b] group-hover:text-white transition-colors">close</span>
         </button>
       )}
 
@@ -154,7 +154,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
                   Full Name
                 </label>
                 <div className="relative flex items-center">
-                  <span className="material-symbols-outlined absolute left-4 text-slate-400 text-[19px] pointer-events-none">
+                  <span className="material-symbols-outlined absolute left-4 text-[#00639b] text-[19px] pointer-events-none">
                     person
                   </span>
                   <input
@@ -175,7 +175,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
                 Work Email Address
               </label>
               <div className="relative flex items-center">
-                <span className="material-symbols-outlined absolute left-4 text-slate-400 text-[19px] pointer-events-none">
+                <span className="material-symbols-outlined absolute left-4 text-[#00639b] text-[19px] pointer-events-none">
                   mail
                 </span>
                 <input
@@ -208,7 +208,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
                 )}
               </div>
               <div className="relative flex items-center">
-                <span className="material-symbols-outlined absolute left-4 text-slate-400 text-[19px] pointer-events-none">
+                <span className="material-symbols-outlined absolute left-4 text-[#00639b] text-[19px] pointer-events-none">
                   lock
                 </span>
                 <input
@@ -221,7 +221,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
                 />
                 <button
                   aria-label="Toggle password visibility"
-                  className="absolute right-3.5 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+                  className="absolute right-3.5 w-8 h-8 flex items-center justify-center text-[#00639b]/70 hover:text-[#00639b] transition-colors"
                   onClick={() => setShowPassword(!showPassword)}
                   type="button"
                 >

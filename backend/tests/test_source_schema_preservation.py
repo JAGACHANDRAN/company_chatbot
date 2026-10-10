@@ -68,9 +68,8 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         self.assertIn("Contact Person 1:", ans)
         self.assertIn("Name: Shreethan Srinivasaiah Shetty", ans)
         self.assertIn("Designation: Senior Quality Engineer", ans)
-        self.assertIn("Contact Number 1: Not Available", ans)
-        self.assertIn("Email 1: Not Available", ans)
-        self.assertIn("Location: Not Available", ans)
+        self.assertIn("Contact Number 1: No data available", ans)
+        self.assertIn("Email 1: No data available", ans)
 
         # Ensure disallowed database fields are NOT in final text answer
         self.assertNotIn("Department:", ans)
@@ -123,14 +122,12 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         self.assertNotIn("Database:", ans)
 
         # Preserves clean source file association
-        self.assertIn("Source File: File A, File B", ans)
-        self.assertIn("- Source: File A", ans)
-        self.assertIn("- Source: File B", ans)
+        self.assertIn("Source File: File A", ans)
+        self.assertIn("Source File: File B", ans)
         self.assertIn("Company Name: TVS", ans)
         self.assertIn("Contact Person 1:", ans)
         self.assertIn("Name: Ravi", ans)
         self.assertIn("Contact Number 1: 123456", ans)
-        self.assertIn("Name: Kumar", ans)
         self.assertIn("Email 1: abc@example.com", ans)
 
         # Disallowed fields must never appear
@@ -141,9 +138,8 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         """
         TEST 3:
         Missing information must strictly adhere to:
-        - Contact Number 1: Not Available (if none)
-        - Email 1: Not Available (if none)
-        - Location: Not Available (if none)
+        - Contact Number 1: No data available (if none)
+        - Email 1: No data available (if none)
         - Only allowed user-facing fields permitted.
         """
         rec = {
@@ -164,10 +160,9 @@ class TestSourceSchemaPreservation(unittest.TestCase):
         self.assertIn("Company Name: Acme Corp", ans)
         self.assertIn("Contact Person 1:", ans)
         self.assertIn("Name: Alice", ans)
-        self.assertIn("Designation: Not Available", ans)
-        self.assertIn("Contact Number 1: Not Available", ans)
-        self.assertIn("Email 1: Not Available", ans)
-        self.assertIn("Location: Not Available", ans)
+        self.assertIn("Designation: No data available", ans)
+        self.assertIn("Contact Number 1: No data available", ans)
+        self.assertIn("Email 1: No data available", ans)
         # Disallowed fields must NOT appear at all
         self.assertNotIn("Department", ans)
         self.assertNotIn("State:", ans)

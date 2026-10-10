@@ -8,12 +8,19 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pymongo.collection import Collection
 from ..database import get_db, get_database, get_database_name, get_configured_collection_names
-from ..config import PRIVACY_MODE, FINAL_K
-from ..schemas import ChatRequest, ChatResponse, LookupResult
+from ..config import PRIVACY_MODE, FINAL_K, LLM_MODEL
+from ..schemas import ChatRequest, ChatResponse, LookupResult, FeedbackRequest
 from ..services.mongo_dataset import get_dataset, list_datasets
 from ..search import ALLOWED_SEARCH_FIELDS
 from ..utils.normalization import extract_original_source_fields
 from ..services.retrieval_service import group_records_by_source, execute_hybrid_retrieval, validate_record_relevance
+from ..services.observability import (
+    start_chat_trace,
+    trace_step_span,
+    record_feedback_score,
+    mask_text
+)
+from ..services.auth import get_current_user_optional
 from ..services.query_understanding import (
     parse_query_understanding,
     fallback_query_understanding,
@@ -319,11 +326,21 @@ async def execute_rag_pipeline(
     dataset_id: Optional[str] = None,
     history: Optional[List[Dict[str, Any]]] = None,
     session_id: Optional[str] = "default_session",
+    user_id: Optional[str] = "anonymous",
     explain: bool = False
 ) -> ChatResponse:
     """
     Executes End-to-End Hybrid RAG Pipeline or Follow-up Result Filter.
+    Logs developer observability trace & spans with strict PII masking.
     """
+    # Step 2: Initialize root chat trace (never fails or raises)
+    trace = start_chat_trace(
+        user_query=raw_query,
+        user_id=user_id or "anonymous",
+        session_id=session_id or "default_session",
+        metadata={"explain": explain}
+    )
+
     db = get_database()
     target_dataset_id = dataset_id if dataset_id and dataset_id not in ("all", "default", "*", "companies") else "all"
     display_dataset_name = "All Datasets"
@@ -340,10 +357,32 @@ async def execute_rag_pipeline(
         explain = True
         effective_query = re.sub(r"--explain\b", "", effective_query, flags=re.IGNORECASE).strip()
 
-    # 1. Execute LLM Query Planner (Step 3)
+    # Step 3a: Trace Query Planner Span
     has_prev = bool(get_last_result_set(session_id))
     from ..services.query_planner import plan_query_execution, execute_planned_retrieval, QueryPlan
-    query_plan = await plan_query_execution(effective_query, history=history, has_previous_results=has_prev)
+    with trace_step_span(trace, name="query_planner", input_data=mask_text(effective_query)) as planner_span:
+        query_plan = await plan_query_execution(effective_query, history=history, has_previous_results=has_prev)
+        plan_summary = {
+            "tasks": [
+                {
+                    "intent": t.intent,
+                    "companies": t.companies,
+                    "must_have": t.must_have,
+                    "must_not_have": t.must_not_have,
+                    "fields": t.fields
+                }
+                for t in query_plan.tasks
+            ],
+            "used_fallback": query_plan.used_fallback,
+            "filters_removed_by_guard": query_plan.filters_removed_by_guard
+        }
+        planner_span.update(
+            output=plan_summary,
+            metadata={
+                "planner_fallback": query_plan.used_fallback,
+                "filters_removed_by_guard": query_plan.filters_removed_by_guard
+            }
+        )
 
     # 2. Detect Follow-up Availability Filter (Task 4 & 5)
     normalized_q = normalize_query_typos(effective_query)
@@ -411,6 +450,11 @@ async def execute_rag_pipeline(
     if is_explicit_followup and has_prev:
         session_data = get_last_result_set(session_id)
         if not session_data or not session_data.get("original_ids"):
+            trace.score("planner_fallback", 1.0 if query_plan.used_fallback else 0.0)
+            trace.score("filters_removed_by_guard", 1.0 if query_plan.filters_removed_by_guard else 0.0)
+            trace.score("vector_fallback_used", 0.0)
+            trace.score("no_results", 1.0)
+            trace.end(output={"total_results": 0, "with_email_count": 0})
             return ChatResponse(
                 success=True,
                 found=False,
@@ -434,6 +478,12 @@ async def execute_rag_pipeline(
             comp_name = session_data.get("company") or "the database"
             formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(restored_records, display_dataset_name=display_dataset_name)
             msg = f"Reset filters. Showing all {len(display_records)} original results for '{comp_name}'."
+            trace.score("planner_fallback", 1.0 if query_plan.used_fallback else 0.0)
+            trace.score("filters_removed_by_guard", 1.0 if query_plan.filters_removed_by_guard else 0.0)
+            trace.score("vector_fallback_used", 0.0)
+            trace.score("no_results", 0.0 if len(display_records) > 0 else 1.0)
+            w_email = sum(1 for r in display_records if r.get("email") or r.get("Email"))
+            trace.end(output={"total_results": len(display_records), "with_email_count": w_email})
             return ChatResponse(
                 success=True,
                 found=len(display_records) > 0,
@@ -482,6 +532,12 @@ async def execute_rag_pipeline(
 
         formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(filtered_records, display_dataset_name=display_dataset_name)
 
+        trace.score("planner_fallback", 1.0 if query_plan.used_fallback else 0.0)
+        trace.score("filters_removed_by_guard", 1.0 if query_plan.filters_removed_by_guard else 0.0)
+        trace.score("vector_fallback_used", 0.0)
+        w_email = sum(1 for r in display_records if r.get("email") or r.get("Email"))
+        trace.end(output={"total_results": matched_count, "with_email_count": w_email})
+
         return ChatResponse(
             success=True,
             found=matched_count > 0,
@@ -511,18 +567,40 @@ async def execute_rag_pipeline(
         )
         found = len(final_records) > 0
         from ..llm import generate_answer
-        llm_res = await generate_answer(
-            question=effective_query,
-            history=history,
-            records=final_records[:5],
-            max_records=5
-        )
+        
+        # Step 3f: Trace LLM Generation Span (Counts & latency only, never prompt or records)
+        with trace_step_span(trace, name="llm_generation", as_type="generation") as gen_span:
+            t_gen0 = time.time()
+            llm_res = await generate_answer(
+                question=effective_query,
+                history=history,
+                records=final_records[:5],
+                max_records=5
+            )
+            gen_latency = round((time.time() - t_gen0) * 1000, 2)
+            gen_span.update(
+                output={
+                    "model": LLM_MODEL,
+                    "records_sent_count": min(len(final_records), 5),
+                    "latency_ms": gen_latency
+                },
+                metadata={"model": LLM_MODEL, "records_sent_count": min(len(final_records), 5)}
+            )
+
         final_markdown = llm_res.get("answer") or "No relevant information found for your question."
         formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(
             final_records,
             structured_query=structured_query,
             display_dataset_name=display_dataset_name
         )
+
+        trace.score("planner_fallback", 1.0 if query_plan.used_fallback else 0.0)
+        trace.score("filters_removed_by_guard", 1.0 if query_plan.filters_removed_by_guard else 0.0)
+        trace.score("vector_fallback_used", 0.0)
+        trace.score("no_results", 1.0 if not found else 0.0)
+        w_email = sum(1 for r in display_records if r.get("email") or r.get("Email")) if found else 0
+        trace.end(output={"total_results": len(display_records) if found else 0, "with_email_count": w_email})
+
         return ChatResponse(
             success=True,
             found=found,
@@ -549,9 +627,71 @@ async def execute_rag_pipeline(
         limit=FINAL_K
     )
 
+    # Step 3b: Trace Keyword Search Span
+    with trace_step_span(trace, name="keyword_search", input_data={"companies_count": len(query_plan.companies)}) as kw_span:
+        kw_hits = plan_res.get("keyword_hits", 0)
+        hits_per_name = {}
+        total_hits_before_dedup = 0
+        for t_r in plan_res.get("task_results", []):
+            total_hits_before_dedup += sum(t_r.get("stages", {}).values())
+            for comp in query_plan.companies:
+                recs = t_r.get("found_by_company", {}).get(comp, [])
+                cnt = len(recs) if isinstance(recs, list) else int(recs or 0)
+                hits_per_name[comp] = hits_per_name.get(comp, 0) + cnt
+        duplicates_removed = max(0, total_hits_before_dedup - kw_hits)
+        kw_span.update(output={
+            "company_count": len(query_plan.companies),
+            "keyword_hits": kw_hits,
+            "hits_per_name": hits_per_name,
+            "duplicates_removed": duplicates_removed
+        })
+
+    # Step 3c: Trace Vector Search Span
+    with trace_step_span(trace, name="vector_search", input_data={"query": mask_text(effective_query)}) as vec_span:
+        raw_v_hits = plan_res.get("vector_hits_raw", plan_res.get("vector_hits", 0))
+        kept_v_hits = plan_res.get("vector_hits", 0)
+        top_10 = [
+            {
+                "_id": str(r.get("_id", "")),
+                "score": round(float(r.get("vector_score", 0.0)), 4)
+            }
+            for r in plan_res.get("raw_vector_records", plan_res.get("vector_records", []))[:10]
+        ]
+        vec_span.update(output={
+            "hit_count": raw_v_hits,
+            "hits_after_threshold": kept_v_hits,
+            "top_10": top_10,
+            "filter_retried_without_filter": bool(plan_res.get("filter_retried_without_filter", False)),
+            "fallback_used": bool(plan_res.get("vector_fallback_used", False))
+        })
+
     final_records = plan_res.get("records", [])
     summary_header = plan_res.get("summary_header", "")
     found = len(final_records) > 0
+
+    # Step 3d: Trace Merge & Filter Span
+    with trace_step_span(trace, name="filter") as merge_span:
+        filter_events = plan_res.get("filter_events", [])
+        if not filter_events and query_plan.must_have:
+            m_phrase = "available" if "available" in effective_query.lower() else "filter"
+            filter_events = [
+                {
+                    "filter": f,
+                    "count_before": plan_res.get("candidates_before_filter", len(final_records)),
+                    "count_after": len(final_records),
+                    "matched_phrase": m_phrase
+                }
+                for f in query_plan.must_have
+            ]
+        merge_span.update(output={
+            "filters": filter_events,
+            "count_before": plan_res.get("candidates_before_filter", len(final_records)),
+            "count_after": len(final_records),
+            "records_before_filter": plan_res.get("candidates_before_filter", len(final_records)),
+            "records_after_filter": len(final_records),
+            "must_have": query_plan.must_have,
+            "must_not_have": query_plan.must_not_have
+        })
 
     structured_query = StructuredQuery(
         original_query=effective_query,
@@ -610,12 +750,30 @@ async def execute_rag_pipeline(
             body_markdown = await generate_final_answer(effective_query, structured_query, final_records)
             final_markdown = f"{summary_header}\n\n{body_markdown}".strip()
 
+    # Bug B Step 3: If vector-only hits exist that pass the threshold, show in separate 'Related results' section
+    vector_only = plan_res.get("vector_only_records", [])
+    if vector_only and found:
+        related_body = format_strict_company_records(vector_only)
+        final_markdown += f"\n\n### Related results\n\n{related_body}"
+
     # 6. Format API sources and UI display records
     formatted_sources, display_records, top_dataset, top_db = format_api_sources_and_records(
         final_records,
         structured_query=structured_query,
         display_dataset_name=display_dataset_name
     )
+
+    # Step 3e: Trace Response Build Span
+    with trace_step_span(trace, name="response_build") as resp_span:
+        has_email = sum(1 for r in display_records if r.get("email") or r.get("Email"))
+        has_phone = sum(1 for r in display_records if r.get("phone") or r.get("Phone") or r.get("mobile") or r.get("Mobile"))
+        has_linkedin = sum(1 for r in display_records if r.get("linkedin") or r.get("LinkedIn"))
+        resp_span.update(output={
+            "records_shown": len(display_records),
+            "has_email_count": has_email,
+            "has_phone_count": has_phone,
+            "has_linkedin_count": has_linkedin
+        })
 
     unfound = plan_res.get("unfound", [])
     suggestions = [s for item in unfound for s in item[1]] if unfound else None
@@ -638,6 +796,17 @@ async def execute_rag_pipeline(
         "plan": plan_res.get("plan", {})
     }
 
+    # Step 4: Attach Trace Scores
+    trace.score("planner_fallback", 1.0 if query_plan.used_fallback else 0.0)
+    trace.score("filters_removed_by_guard", 1.0 if query_plan.filters_removed_by_guard else 0.0)
+    trace.score("vector_fallback_used", 1.0 if plan_res.get("vector_fallback_used", False) else 0.0)
+    trace.score("no_results", 1.0 if len(display_records) == 0 else 0.0)
+    with_email_cnt = sum(1 for r in display_records if r.get("email") or r.get("Email"))
+    trace.end(output={
+        "total_results": len(display_records),
+        "with_email_count": with_email_cnt
+    })
+
     return ChatResponse(
         success=True,
         found=found,
@@ -657,11 +826,12 @@ async def execute_rag_pipeline(
     )
 
 
-
-
-
 @router.post("/chat", response_model=ChatResponse)
-async def chat_search(request: ChatRequest, collections: List[Collection] = Depends(get_db)):
+async def chat_search(
+    request: ChatRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
+    collections: List[Collection] = Depends(get_db)
+):
     """
     Main Secure Hybrid RAG Chat Endpoint.
     - Follow-up availability filters served instantaneously from session cache (Zero LLM)
@@ -669,6 +839,7 @@ async def chat_search(request: ChatRequest, collections: List[Collection] = Depe
     - MongoDB Atlas $vectorSearch + Lexical search merged via RRF (k=60)
     - Exact phone/email lookups served directly with NO LLM call.
     - Supports explain flag for diagnostic stage breakdown.
+    - Developer observability with Langfuse tracing.
     """
     raw_message = request.message.strip() if request.message else ""
     if not raw_message:
@@ -694,13 +865,37 @@ async def chat_search(request: ChatRequest, collections: List[Collection] = Depe
                 break
 
     dataset_id = explicit_dataset_id if explicit_dataset_id else "all"
+    session_id = request.conversation_id or request.session_id or "default_session"
+    user_id = (current_user.get("email") or current_user.get("user_id") or "anonymous") if current_user else "anonymous"
 
     return await execute_rag_pipeline(
         raw_query=raw_message,
         dataset_id=dataset_id,
         history=request.history,
+        session_id=session_id,
+        user_id=user_id,
         explain=bool(request.explain)
     )
+
+
+@router.post("/feedback")
+async def submit_user_feedback(
+    request: FeedbackRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)
+):
+    """
+    Step 4: Records thumbs-up / thumbs-down rating and optional comment into Langfuse as 'user_feedback' score.
+    Masks comment text with mask_text before recording.
+    """
+    u_id = (current_user.get("email") or current_user.get("user_id")) if current_user else None
+    val = 1.0 if request.rating == "up" else 0.0
+    record_feedback_score(
+        session_id=request.conversation_id,
+        value=val,
+        comment=request.comment,
+        user_id=u_id
+    )
+    return {"success": True, "message": "Feedback recorded."}
 
 
 @router.get("/search", response_model=ChatResponse)
@@ -709,6 +904,7 @@ async def direct_search(
     field: Optional[str] = Query(None, description="Optional target column filter"),
     dataset_id: Optional[str] = Query(None, description="Optional dataset ID"),
     explain: bool = Query(False, description="Flag to return diagnostic retrieval stage breakdown"),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional),
     collections: List[Collection] = Depends(get_db)
 ):
     """Direct search endpoint backed by Hybrid RAG engine."""
@@ -733,8 +929,11 @@ async def direct_search(
             final_query = f"at {clean_q}"
 
     target_dataset = dataset_id if dataset_id and dataset_id not in ("default", "all", "*") else "all"
+    user_id = (current_user.get("email") or current_user.get("user_id") or "anonymous") if current_user else "anonymous"
+
     return await execute_rag_pipeline(
         raw_query=final_query,
         dataset_id=target_dataset,
+        user_id=user_id,
         explain=explain
     )

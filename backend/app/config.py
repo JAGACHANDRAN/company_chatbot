@@ -36,6 +36,16 @@ NUM_CANDIDATES = int(os.getenv("NUM_CANDIDATES", "500"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 MASK_PII = os.getenv("MASK_PII", "true").strip().lower() in ("true", "1", "yes", "on")
 
+# ==============================================================================
+# Langfuse LLM Observability & Tracing Settings
+# ==============================================================================
+LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").strip()
+APP_ENV = os.getenv("APP_ENV", "development").strip()
+APP_VERSION = "2.2.0"
+
 # Retained for backwards compatibility across existing routes
 PRIVACY_MODE: bool = False
 OLLAMA_BASE_URL = OLLAMA_CLOUD_URL
@@ -58,6 +68,5 @@ def validate_privacy_and_llm_config() -> None:
     print("[SECURITY: HYBRID RAG ACTIVE]")
     print(f"  - Local Embeddings: {EMBEDDING_MODEL} ({EMBEDDING_DIM}-d) via {OLLAMA_LOCAL_URL}")
     print(f"  - Cloud LLM       : {LLM_MODEL} (Mode: {LLM_MODE}, Reasoning: {LLM_REASONING})")
-    print(f"  - PII Protection  : {'ACTIVE (Masking enabled)' if MASK_PII else 'DISABLED'}")
+    print(f"  - PII Protection  : {'ACTIVE (Masking enabled)' if MASK_PII else 'INACTIVE'}")
     print(f"  - Retrieval       : {VECTOR_INDEX_NAME} (RRF k={RRF_K}, Full similarity list, Max {FINAL_K})")
-

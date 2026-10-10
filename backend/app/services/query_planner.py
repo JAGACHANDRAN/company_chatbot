@@ -58,6 +58,8 @@ class SearchTask(BaseModel):
 
 class QueryPlan(BaseModel):
     tasks: List[SearchTask] = Field(default_factory=list)
+    used_fallback: bool = False
+    filters_removed_by_guard: bool = False
 
     @property
     def intent(self) -> str:
@@ -114,14 +116,116 @@ CRITICAL RULES:
 1. Output ONLY valid JSON matching the schema: {"tasks": [SearchTask, ...]}.
 2. If the user message contains multiple independent sub-requests (e.g. "tvs companies with emails, ashok leyland in chennai, and titan quality persons"), return a separate SearchTask for each sub-request in the "tasks" array.
 3. If a pasted list of multiple company names is provided with one set of filters, put all company names in "companies" of a single SearchTask.
-4. "must_have" can contain: "email", "phone", "linkedin", "address", "designation", "contact_person".
+4. "must_have" can contain: "contact", "email", "phone", "linkedin", "address", "designation", "contact_person".
+   - "contact available", "contacts available", "have contact details", "with contact" -> must_have ["contact"]
+   - "email available", "with email" -> must_have ["email"]
+   - "phone available", "with number" -> must_have ["phone"]
+   - "linkedin available" -> must_have ["linkedin"]
+   - The word "list" or "contact" alone, without available/with/have, is NOT a filter.
+   - "fields" is the set of columns to show; it must not be used instead of must_have.
 5. "must_not_have" can contain: "email", "phone", "linkedin".
 6. If the user refers to previous results ("from those", "from them", "out of these", "only with phone"), set intent="filter_previous" and use_previous_results=true.
 7. If the user asks a count question ("how many have email"), set intent="count".
 8. If the user asks a semantic/descriptive question (e.g. "labs that calibrate pressure gauges"), set intent="open_question".
 9. If the user asks for "another company", "other companies", or "a different company" (e.g. "give me another company list which having email alone"), this is EXPLICITLY NOT previous results. Set intent="lookup", use_previous_results=false, and never set "another" or "other" as a company name.
+10. A company name can contain several words (e.g. "delphi tvs", "tvs motor company", "3d solution"). Return ONE entry per company in "companies". NEVER break a single company name into individual words.
 
 FEW-SHOT EXAMPLES:
+User: "delphi tvs"
+JSON:
+{
+  "tasks": [
+    {
+      "intent": "lookup",
+      "companies": ["delphi tvs"],
+      "must_have": [],
+      "must_not_have": [],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
+      "city": null,
+      "state": null,
+      "use_previous_results": false
+    }
+  ]
+}
+
+User: "tvs motor company"
+JSON:
+{
+  "tasks": [
+    {
+      "intent": "lookup",
+      "companies": ["tvs motor company"],
+      "must_have": [],
+      "must_not_have": [],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
+      "city": null,
+      "state": null,
+      "use_previous_results": false
+    }
+  ]
+}
+
+User: "3d solution"
+JSON:
+{
+  "tasks": [
+    {
+      "intent": "lookup",
+      "companies": ["3d solution"],
+      "must_have": [],
+      "must_not_have": [],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
+      "city": null,
+      "state": null,
+      "use_previous_results": false
+    }
+  ]
+}
+
+User: "delphi tvs, titan"
+JSON:
+{
+  "tasks": [
+    {
+      "intent": "lookup",
+      "companies": ["delphi tvs", "titan"],
+      "must_have": [],
+      "must_not_have": [],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
+      "city": null,
+      "state": null,
+      "use_previous_results": false
+    }
+  ]
+}
+
+User: "tvs and titan"
+JSON:
+{
+  "tasks": [
+    {
+      "intent": "lookup",
+      "companies": ["tvs", "titan"],
+      "must_have": [],
+      "must_not_have": [],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
+      "city": null,
+      "state": null,
+      "use_previous_results": false
+    }
+  ]
+}
+
 User: "tvs"
 JSON:
 {
@@ -179,18 +283,18 @@ JSON:
   ]
 }
 
-User: "tvs quality dept persons alone"
+User: "tvs contact available list"
 JSON:
 {
   "tasks": [
     {
       "intent": "lookup",
       "companies": ["tvs"],
-      "must_have": ["designation"],
+      "must_have": ["contact"],
       "must_not_have": [],
-      "fields": ["contact_person", "designation"],
-      "only_requested_fields": true,
-      "designation_keywords": ["quality", "qa", "qc", "quality assurance", "quality control", "quality manager", "quality head"],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
       "city": null,
       "state": null,
       "use_previous_results": false
@@ -198,7 +302,26 @@ JSON:
   ]
 }
 
-User: "tvs companies with emails, ashok leyland in chennai, and titan quality persons"
+User: "tvs contact list"
+JSON:
+{
+  "tasks": [
+    {
+      "intent": "lookup",
+      "companies": ["tvs"],
+      "must_have": [],
+      "must_not_have": [],
+      "fields": [],
+      "only_requested_fields": false,
+      "designation_keywords": [],
+      "city": null,
+      "state": null,
+      "use_previous_results": false
+    }
+  ]
+}
+
+User: "tvs emails available"
 JSON:
 {
   "tasks": [
@@ -207,86 +330,24 @@ JSON:
       "companies": ["tvs"],
       "must_have": ["email"],
       "must_not_have": [],
-      "fields": ["email"],
-      "only_requested_fields": true,
-      "designation_keywords": [],
-      "city": null,
-      "state": null,
-      "use_previous_results": false
-    },
-    {
-      "intent": "lookup",
-      "companies": ["ashok leyland"],
-      "must_have": [],
-      "must_not_have": [],
-      "fields": [],
-      "only_requested_fields": false,
-      "designation_keywords": [],
-      "city": "chennai",
-      "state": null,
-      "use_previous_results": false
-    },
-    {
-      "intent": "lookup",
-      "companies": ["titan"],
-      "must_have": ["designation"],
-      "must_not_have": [],
-      "fields": ["contact_person", "designation"],
-      "only_requested_fields": true,
-      "designation_keywords": ["quality", "qa", "qc", "quality assurance", "quality control"],
-      "city": null,
-      "state": null,
-      "use_previous_results": false
-    }
-  ]
-}
-
-User: "from those only with phone"
-JSON:
-{
-  "tasks": [
-    {
-      "intent": "filter_previous",
-      "companies": [],
-      "must_have": ["phone"],
-      "must_not_have": [],
       "fields": [],
       "only_requested_fields": false,
       "designation_keywords": [],
       "city": null,
       "state": null,
-      "use_previous_results": true
+      "use_previous_results": false
     }
   ]
 }
 
-User: "how many have linkedin"
+User: "tvs phone and email available"
 JSON:
 {
   "tasks": [
     {
-      "intent": "count",
-      "companies": [],
-      "must_have": ["linkedin"],
-      "must_not_have": [],
-      "fields": ["linkedin"],
-      "only_requested_fields": false,
-      "designation_keywords": [],
-      "city": null,
-      "state": null,
-      "use_previous_results": true
-    }
-  ]
-}
-
-User: "labs that calibrate pressure gauges"
-JSON:
-{
-  "tasks": [
-    {
-      "intent": "open_question",
-      "companies": [],
-      "must_have": [],
+      "intent": "lookup",
+      "companies": ["tvs"],
+      "must_have": ["phone", "email"],
       "must_not_have": [],
       "fields": [],
       "only_requested_fields": false,
@@ -301,12 +362,14 @@ JSON:
 
 
 def split_pasted_companies(raw_text: str) -> List[str]:
-    """Splits pasted lists of company names on newlines, semicolons, bullets, tabs, and commas."""
+    """
+    Splits pasted lists of company names ONLY on newlines, semicolons, bullets, tabs, and commas.
+    NEVER splits on plain spaces.
+    """
     if not raw_text:
         return []
 
     # Check if text contains explicit sentence filter instructions: 'with email', 'in chennai', etc.
-    # Note: avoid matching 'and' as a filter because company names contain 'and' (e.g. 'mahindra and mahindra')
     has_filter_clause = bool(re.search(
         r"\b(with\s+(?:emails?|phones?|linkedin)|without\s+(?:emails?|phones?)|in\s+[a-z]+|dept|department|quality\s+(?:persons?|dept)|alone|only)\b",
         raw_text,
@@ -390,7 +453,6 @@ def find_another_company_from_db(
         if col.find_one(q):
             return c_name
 
-    # Dynamic fallback: find any doc in DB where norm_company is not in exclude_clean
     try:
         sample_q: Dict[str, Any] = {}
         if must_have and "email" in must_have:
@@ -436,16 +498,29 @@ def _parse_single_clause(clause: str, history: Optional[List[Dict[str, Any]]] = 
                 else:
                     must_not_have.append(f)
     else:
-        if sq.email_required is True:
-            must_have.append("email")
-        if sq.email_required is False or "without email" in clause.lower() or "no email" in clause.lower():
+        q_low_c = clause_clean.lower()
+        has_avail_words = bool(re.search(r"\b(available|availability|having|which\s+have|who\s+have|with|only\s+those\s+with|exists|present|listed)\b", q_low_c))
+        has_contact_phrase = bool(re.search(r"\b(contact\s+available|contacts\s+available|contact\s+details\s+available|have\s+contact\s+details|with\s+contact)\b", q_low_c))
+        has_contact_kw = bool(re.search(r"\b(contacts?|contact\s+details)\b", q_low_c))
+        has_avail_contact = has_contact_phrase or (has_avail_words and has_contact_kw and not re.search(r"\b(emails?|phones?|numbers?)\b", q_low_c))
+        if has_avail_contact:
+            must_have.append("contact")
+
+        if sq.email_required is True or (has_avail_words and re.search(r"\b(emails?|e-mail|mail)\b", q_low_c)) or "with email" in q_low_c or "email available" in q_low_c:
+            if "email" not in must_have:
+                must_have.append("email")
+        if sq.email_required is False or "without email" in q_low_c or "no email" in q_low_c:
             must_not_have.append("email")
-        if sq.phone_required is True:
-            must_have.append("phone")
-        if sq.phone_required is False or "without phone" in clause.lower() or "no phone" in clause.lower():
+
+        if sq.phone_required is True or (has_avail_words and re.search(r"\b(phones?|numbers?|contact\s+numbers?|mobiles?)\b", q_low_c)) or "with number" in q_low_c or "phone available" in q_low_c:
+            if "phone" not in must_have:
+                must_have.append("phone")
+        if sq.phone_required is False or "without phone" in q_low_c or "no phone" in q_low_c:
             must_not_have.append("phone")
-        if sq.linkedin_required is True:
-            must_have.append("linkedin")
+
+        if sq.linkedin_required is True or (has_avail_words and "linkedin" in q_low_c) or "linkedin available" in q_low_c or "with linkedin" in q_low_c:
+            if "linkedin" not in must_have:
+                must_have.append("linkedin")
 
     clause_low = clause.lower()
     city_val = sq.city
@@ -470,11 +545,12 @@ def _parse_single_clause(clause: str, history: Optional[List[Dict[str, Any]]] = 
         if state_val:
             c_clean = re.sub(rf"\b{re.escape(state_val)}\b", "", c_clean, flags=re.IGNORECASE)
         c_clean = re.sub(
-            r"\b(?:quality\s+(?:dept|department)?\s*(?:persons?|contacts?|heads?|managers?)?|quality|dept|department|persons?|contacts?|alone|only|emails?|phones?|details|companies|company|in|at|from|with|without|another|other|others|different|next|new|same|previous|one)\b",
+            r"\b(?:quality\s+(?:dept|department)?\s*(?:persons?|contacts?|heads?|managers?)?|quality|dept|department|persons?|contacts?|available|availability|having|exists|present|listed|list|alone|only|emails?|phones?|numbers?|details|companies|company|in|at|from|with|without|another|other|others|different|next|new|same|previous|one)\b",
             "",
             c_clean,
             flags=re.IGNORECASE
         ).strip()
+        c_clean = re.sub(r"^(?:and|&)\s+|\s+(?:and|&)$", "", c_clean, flags=re.IGNORECASE).strip()
         c_clean = re.sub(r"\s+", " ", c_clean).strip()
         if c_clean and len(c_clean) >= 2 and c_clean.lower() not in ("another", "other", "others", "different", "next", "new", "same", "previous", "one"):
             companies.append(c_clean.lower())
@@ -497,45 +573,190 @@ def _parse_single_clause(clause: str, history: Optional[List[Dict[str, Any]]] = 
                         break
             chosen = find_another_company_from_db(exclude_companies=prev_comps, must_have=must_have, city=city_val)
             if chosen:
-                companies.append(chosen.lower())
+                companies = [chosen]
 
-    desig_kw = []
+    fields = []
+    if sq.requested_fields:
+        fields = sq.requested_fields
+    elif sq.email_required:
+        fields.append("email")
+    elif sq.phone_required:
+        fields.append("phone")
+    elif sq.linkedin_required:
+        fields.append("linkedin")
+
+    desig_kws = []
     if sq.designation:
-        desig_clean = sq.designation.lower().strip()
-        if desig_clean in DESIGNATION_SYNONYMS:
-            desig_kw = list(DESIGNATION_SYNONYMS[desig_clean])
-        else:
-            desig_kw = [desig_clean]
+        raw_dk = sq.designation.lower().strip()
+        desig_kws.append(raw_dk)
+        if raw_dk in DESIGNATION_SYNONYMS:
+            desig_kws.extend(DESIGNATION_SYNONYMS[raw_dk])
     elif "quality" in clause_low or (sq.department and sq.department.lower() == "quality"):
-        desig_kw = list(DESIGNATION_SYNONYMS["quality"])
+        desig_kws.extend(DESIGNATION_SYNONYMS["quality"])
         if "designation" not in must_have and "contact_person" not in must_have:
             must_have.append("designation")
+        if "contact_person" not in fields:
+            fields.append("contact_person")
+    desig_kws = list(dict.fromkeys(desig_kws))
 
-    open_indicators = ["which", "what", "where", "how", "labs that", "companies that", "who makes", "who provides", "calibrate", "calibration"]
-    if not companies and not use_prev and any(ind in clause_low for ind in open_indicators):
+    if sq.intent == "general_search" and not companies and not followup:
         intent = "open_question"
-
-    fields = list(sq.requested_fields)
-    if not fields and ("alone" in clause_low or "only" in clause_low):
-        if "email" in clause_low or "mail" in clause_low:
-            fields.append("email")
-        if "phone" in clause_low or "contact" in clause_low:
-            fields.append("phone")
-        if "person" in clause_low or "quality" in clause_low:
-            fields.extend(["contact_person", "designation"])
 
     return SearchTask(
         intent=intent,
         companies=companies,
-        must_have=list(set(must_have)),
-        must_not_have=list(set(must_not_have)),
-        fields=list(set(fields)),
-        only_requested_fields=sq.is_only_fields or bool(fields),
-        designation_keywords=desig_kw,
+        must_have=must_have,
+        must_not_have=must_not_have,
+        fields=fields,
+        only_requested_fields=sq.is_only_fields,
+        designation_keywords=desig_kws,
         city=city_val,
         state=state_val,
         use_previous_results=use_prev
     )
+
+
+def validate_companies(plan: QueryPlan, raw_query: str) -> QueryPlan:
+    """
+    Bug C Code Guard:
+    For any plan with 2+ companies that were separated only by spaces or 'and'/'&',
+    first test the WHOLE phrase with keyword rules (normalize_company, whole-word, all-tokens).
+    If the whole phrase matches >= 1 records in DB, replace the pieces with the one whole name.
+    Prefer the longest phrase that matches the database.
+    Logs: '[Planner] merged split company name -> <name>'.
+    """
+    from ..database import get_database, get_configured_collection_names
+    from .multi_stage_search import execute_keyword_company_search
+    try:
+        db = get_database()
+        cols = list(dict.fromkeys(get_configured_collection_names() + ["dataset_records"]))
+    except Exception as e:
+        logger.warning(f"[validate_companies] DB access skipped: {e}")
+        return plan
+
+    for task in plan.tasks:
+        if len(task.companies) >= 2:
+            # Test whole combined phrase
+            joined_phrase = " ".join(task.companies)
+            recs, _ = execute_keyword_company_search(db, cols, joined_phrase)
+            if recs:
+                logger.info(f"[Planner] merged split company name -> {joined_phrase}")
+                task.companies = [joined_phrase]
+                continue
+
+            # Test whole query normalized after stripping noise
+            clean_q = re.sub(
+                r"\b(?:give|show|find|list|me|companies|company|with|having|emails?|phones?|details|in|at|from)\b",
+                "",
+                raw_query,
+                flags=re.IGNORECASE
+            ).strip()
+            clean_q = re.sub(r"\s+(?:and|&)\s+", " ", clean_q, flags=re.IGNORECASE).strip()
+            norm_q = normalize_company(clean_q)
+            if norm_q and norm_q != joined_phrase:
+                recs_q, _ = execute_keyword_company_search(db, cols, norm_q)
+                if recs_q:
+                    logger.info(f"[Planner] merged split company name -> {norm_q}")
+                    task.companies = [norm_q]
+                    continue
+
+            # Pairwise merging for adjacent split names
+            new_comps = []
+            idx = 0
+            while idx < len(task.companies):
+                if idx + 1 < len(task.companies):
+                    pair_name = f"{task.companies[idx]} {task.companies[idx+1]}"
+                    recs_pair, _ = execute_keyword_company_search(db, cols, pair_name)
+                    if recs_pair:
+                        logger.info(f"[Planner] merged split company name -> {pair_name}")
+                        new_comps.append(pair_name)
+                        idx += 2
+                        continue
+                new_comps.append(task.companies[idx])
+                idx += 1
+            task.companies = new_comps
+
+    return plan
+
+
+AVAILABILITY_WORDS = [
+    "available", "availability", "having", "which have", "who have", "with",
+    "only those with", "exists", "present", "listed",
+    "contact available", "contact details available", "contacts available",
+    "have contact details", "with contact"
+]
+
+
+def validate_filters(plan: QueryPlan, raw_query: str) -> QueryPlan:
+    """
+    Planner Guard for Filters:
+    Verifies that any must_have filter generated by the planner is explicitly grounded
+    in the raw query. If words like 'contact' or 'list' appear alone without availability
+    words, removes the filter and sets plan.filters_removed_by_guard = True.
+    If availability words are present, retains the filter.
+    Also ensures 'fields' is not used instead of 'must_have'.
+    """
+    q_low = raw_query.lower()
+    has_avail = any(re.search(rf"\b{re.escape(w)}\b", q_low) for w in AVAILABILITY_WORDS)
+
+    for t in plan.tasks:
+        if "contact" in t.fields:
+            t.fields = [f for f in t.fields if f != "contact"]
+            if has_avail and "contact" not in t.must_have:
+                t.must_have.append("contact")
+
+        kept_must_have = []
+        for f in t.must_have:
+            if f == "contact":
+                has_contact_avail = has_avail or bool(re.search(
+                    r"\b(contact\s+available|contacts\s+available|contact\s+details\s+available|have\s+contact\s+details|with\s+contact)\b",
+                    q_low
+                ))
+                has_avail_trigger = bool(re.search(
+                    r"\b(available|availability|having|which\s+have|who\s+have|with|only\s+those\s+with|exists|present|listed|have)\b",
+                    q_low
+                ))
+                if has_contact_avail and has_avail_trigger:
+                    kept_must_have.append(f)
+                else:
+                    plan.filters_removed_by_guard = True
+                    logger.info(f"[Planner Guard] Removed filter '{f}' (contact/list alone without availability words)")
+            elif f == "email":
+                has_email_kw = bool(re.search(r"\b(emails?|e-mail|mail)\b", q_low))
+                if has_email_kw and (has_avail or "without" not in q_low):
+                    kept_must_have.append(f)
+                elif has_avail:
+                    kept_must_have.append(f)
+                else:
+                    plan.filters_removed_by_guard = True
+                    logger.info(f"[Planner Guard] Removed filter '{f}' (no explicit query match)")
+            elif f == "phone":
+                has_phone_kw = bool(re.search(r"\b(phones?|numbers?|contact\s+numbers?|mobiles?)\b", q_low))
+                if has_phone_kw and (has_avail or "without" not in q_low):
+                    kept_must_have.append(f)
+                elif has_avail:
+                    kept_must_have.append(f)
+                else:
+                    plan.filters_removed_by_guard = True
+                    logger.info(f"[Planner Guard] Removed filter '{f}' (no explicit query match)")
+            elif f == "linkedin":
+                if "linkedin" in q_low:
+                    kept_must_have.append(f)
+                else:
+                    plan.filters_removed_by_guard = True
+                    logger.info(f"[Planner Guard] Removed filter '{f}' (no explicit query match)")
+            elif f in ("address", "contact_person", "designation"):
+                has_kw = bool(re.search(rf"\b{f}\b", q_low)) or (f == "designation" and any(k in q_low for k in ["quality", "qa", "qc", "manager", "head", "director", "role", "title"])) or (f == "contact_person" and any(k in q_low for k in ["person", "persons", "people", "name"]))
+                if has_kw or has_avail:
+                    kept_must_have.append(f)
+                else:
+                    plan.filters_removed_by_guard = True
+                    logger.info(f"[Planner Guard] Removed filter '{f}' (no explicit query match)")
+            else:
+                kept_must_have.append(f)
+        t.must_have = kept_must_have
+
+    return plan
 
 
 def rule_based_plan(
@@ -544,22 +765,29 @@ def rule_based_plan(
     has_previous_results: bool = False
 ) -> QueryPlan:
     """
-    Deterministic fallback planner using local regex, clause splitting, & heuristics.
-    Handles multi-request sentences, pasted company lists, follow-ups, and counts.
+    Fallback deterministic rule-based query planner (Zero LLM, 100% offline).
     """
     clean = raw_query.strip()
     if not clean:
-        return QueryPlan(tasks=[SearchTask()])
+        return QueryPlan(tasks=[SearchTask()], used_fallback=True)
 
-    # Check for pasted multi-line / bulleted / comma-separated list first
+    # Check for pasted list
     pasted = split_pasted_companies(clean)
     if len(pasted) > 1:
         single_task = _parse_single_clause(clean, history=history, has_previous_results=has_previous_results)
         single_task.companies = pasted
-        return QueryPlan(tasks=[single_task])
+        plan = QueryPlan(tasks=[single_task], used_fallback=True)
+        plan = validate_companies(plan, clean)
+        return validate_filters(plan, clean)
+    # Follow-up query check: genuine follow-up queries referring to previous results are single-task
+    followup = detect_followup_availability_filter(clean, history=history)
+    if followup and followup.is_followup:
+        single_task = _parse_single_clause(clean, history=history, has_previous_results=has_previous_results)
+        plan = QueryPlan(tasks=[single_task], used_fallback=True)
+        plan = validate_companies(plan, clean)
+        return validate_filters(plan, clean)
 
-    # Check for multi-clause sentence: e.g. "tvs companies with emails, ashok leyland in chennai, and titan quality persons"
-    # A sentence is multi-clause if it contains multiple clauses with distinct search filters/intents (with/in/quality/dept/persons)
+    # Multi-clause sentence check
     if any(re.search(rf"\b{k}\b", clean, re.IGNORECASE) for k in ["with", "without", "in", "dept", "department", "quality", "persons?", "alone", "only"]):
         raw_clauses = re.split(r",\s*and\s+|\band\b|,\s*", clean, flags=re.IGNORECASE)
         candidate_clauses = [c.strip() for c in raw_clauses if c.strip() and len(c.strip()) >= 2]
@@ -570,11 +798,14 @@ def rule_based_plan(
                 if t.companies or t.intent == "open_question" or t.use_previous_results:
                     tasks.append(t)
             if len(tasks) > 1:
-                return QueryPlan(tasks=tasks)
+                plan = QueryPlan(tasks=tasks, used_fallback=True)
+                plan = validate_companies(plan, clean)
+                return validate_filters(plan, clean)
 
-    # Single clause fallback
     task = _parse_single_clause(clean, history=history, has_previous_results=has_previous_results)
-    return QueryPlan(tasks=[task])
+    plan = QueryPlan(tasks=[task], used_fallback=True)
+    plan = validate_companies(plan, clean)
+    return validate_filters(plan, clean)
 
 
 async def plan_query_execution(
@@ -583,26 +814,22 @@ async def plan_query_execution(
     has_previous_results: bool = False
 ) -> QueryPlan:
     """
-    Step 2: Calls gpt-oss:20b with temperature 0, JSON output, timeout 20s.
-    Sends ONLY: user query, last 3 user messages (text only), allowed fields, has_previous_results.
-    NEVER sends any confidential records or contact values.
+    Step 2: Calls gpt-oss:120b / LLM with temperature 0, JSON output, timeout 20s.
     Falls back to rule_based_plan on any error or timeout.
+    Applies validate_companies code guard.
     """
     clean_query = normalize_query_typos(raw_query.strip())
     if not clean_query:
         return QueryPlan(tasks=[SearchTask()])
 
-    # Check if fast rule-based parser handles simple entities or lists with 100% confidence
     pasted = split_pasted_companies(clean_query)
     if len(pasted) > 1:
         return rule_based_plan(clean_query, history=history, has_previous_results=has_previous_results)
 
-    # Privacy mode or missing API key fallback
     if PRIVACY_MODE or not OLLAMA_API_KEY:
         logger.info("[Planner] fallback to rules (privacy mode / no key)")
         return rule_based_plan(clean_query, history=history, has_previous_results=has_previous_results)
 
-    # Extract last 3 user messages (text only)
     recent_user_turns = []
     if history:
         for turn in history[-6:]:
@@ -644,14 +871,12 @@ async def plan_query_execution(
             raw_content = data.get("message", {}).get("content", "")
 
             parsed_json = json.loads(raw_content)
-            # Support both {"tasks": [...]} and single task JSON
             if "tasks" in parsed_json:
                 plan = QueryPlan(**parsed_json)
             else:
                 task = SearchTask(**parsed_json)
                 plan = QueryPlan(tasks=[task])
 
-            # Expand designation keywords
             for t in plan.tasks:
                 if t.designation_keywords:
                     expanded = set(t.designation_keywords)
@@ -661,7 +886,6 @@ async def plan_query_execution(
                             expanded.update(DESIGNATION_SYNONYMS[kw_low])
                     t.designation_keywords = list(expanded)
 
-            # Enforce Rule 9: If user asks for another/different company, ensure intent is lookup, no prev results, and real new company
             is_another = bool(re.search(
                 r"\b(another|other|others|different|next|new|aanothe|anothe|aanother|anothr|anthr|diffrent|diferent)\b",
                 clean_query.lower()
@@ -689,7 +913,9 @@ async def plan_query_execution(
                         if chosen:
                             t.companies = [chosen]
 
-            logger.info(f"[Planner] Generated Plan -> {len(plan.tasks)} tasks")
+            plan = validate_companies(plan, clean_query)
+            plan = validate_filters(plan, clean_query)
+            logger.info(f"[Planner] Generated Plan -> {len(plan.tasks)} tasks, companies={plan.companies}")
             return plan
 
     except Exception as e:
@@ -700,11 +926,12 @@ async def plan_query_execution(
 async def execute_planned_task(
     task: SearchTask,
     target_dataset: str = "all",
-    limit: int = 1000
+    limit: int = 1000,
+    raw_query: str = ""
 ) -> Dict[str, Any]:
     """
     Executes a single SearchTask independently.
-    Its filters apply strictly to its own companies.
+    Deduplicates by str(_id) immediately upon combining.
     """
     from .multi_stage_search import execute_multi_stage_retrieval
     from .response_generator import (
@@ -713,18 +940,25 @@ async def execute_planned_task(
         extract_emails,
         extract_contact_numbers,
         extract_location,
-        extract_linkedin
+        extract_linkedin,
+        get_contact_fields
     )
 
     companies_to_query = list(dict.fromkeys(task.companies)) if task.companies else []
     found_by_company: Dict[str, List[Dict[str, Any]]] = {}
     unfound_list: List[Tuple[str, List[str]]] = []
     all_matched_records: List[Dict[str, Any]] = []
+    all_vector_only_records: List[Dict[str, Any]] = []
     seen_ids = set()
 
     stage_metrics = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0, "vector": 0}
     total_keyword_hits = 0
     total_vector_hits = 0
+    total_vector_hits_raw = 0
+    top_vector_scores: List[float] = []
+    all_raw_vector_records: List[Dict[str, Any]] = []
+    total_candidates_before = 0
+    all_filter_events: List[Dict[str, Any]] = []
 
     if not companies_to_query:
         return {
@@ -732,14 +966,19 @@ async def execute_planned_task(
             "found_by_company": {},
             "unfound_list": [],
             "records": [],
+            "vector_only_records": [],
+            "raw_vector_records": [],
+            "top_vector_scores": [],
             "total": 0,
             "stages": stage_metrics,
             "keyword_hits": 0,
             "vector_hits": 0,
-            "summary_header": ""
+            "vector_hits_raw": 0,
+            "summary_header": "",
+            "candidates_before_filter": 0,
+            "filter_events": []
         }
 
-    # Run retrieval concurrently for each company in task
     retrieval_tasks = [
         execute_multi_stage_retrieval(
             raw_query=c_name,
@@ -755,18 +994,21 @@ async def execute_planned_task(
             stage_metrics[k_st] += multi_res.get("stages", {}).get(k_st, 0)
         total_keyword_hits += multi_res.get("keyword_hits", 0)
         total_vector_hits += multi_res.get("vector_hits", 0)
+        total_vector_hits_raw += multi_res.get("vector_hits_raw", 0)
+        top_vector_scores.extend(multi_res.get("top_vector_scores", []))
+        all_raw_vector_records.extend(multi_res.get("raw_vector_records", []))
+        all_vector_only_records.extend(multi_res.get("vector_only_records", []))
 
-        # If no keyword matches found for this company name, it is an unfound/misspelled entity
         if not multi_res.get("keyword_records"):
             sugg = multi_res.get("suggestions", [])
             unfound_list.append((c_name, sugg))
             continue
 
         raw_candidates = multi_res.get("records", [])
+        total_candidates_before += len(raw_candidates)
         filtered_for_company: List[Dict[str, Any]] = []
 
         for r in raw_candidates:
-            # 1. Location / City / State check
             if task.city:
                 loc = extract_location(r)
                 c_city = (loc.get("city") or "").lower()
@@ -780,31 +1022,36 @@ async def execute_planned_task(
                 if task.state.lower() not in c_state:
                     continue
 
-            # 2. Must Have Conditions
-            if "email" in task.must_have and not extract_emails(r):
+            cf = get_contact_fields(r)
+
+            if "contact" in task.must_have:
+                has_email = bool(cf.get("emails"))
+                has_phone = bool(cf.get("phones"))
+                if not (has_email or has_phone):
+                    continue
+
+            if "email" in task.must_have and not cf.get("emails"):
                 continue
-            if "phone" in task.must_have and not extract_contact_numbers(r):
+            if "phone" in task.must_have and not cf.get("phones"):
                 continue
-            if "linkedin" in task.must_have and not extract_linkedin(r):
+            if "linkedin" in task.must_have and not cf.get("linkedin"):
                 continue
             if "address" in task.must_have:
-                loc = extract_location(r)
-                if not (loc.get("address") or loc.get("city") or loc.get("state")):
+                addr = cf.get("address")
+                if not addr or addr == "No data available":
                     continue
-            if "designation" in task.must_have and not extract_person_info(r).get("designation"):
+            if "designation" in task.must_have and not cf.get("designations"):
                 continue
-            if "contact_person" in task.must_have and not extract_person_info(r).get("name"):
-                continue
-
-            # 3. Must Not Have Conditions
-            if "email" in task.must_not_have and extract_emails(r):
-                continue
-            if "phone" in task.must_not_have and extract_contact_numbers(r):
-                continue
-            if "linkedin" in task.must_not_have and extract_linkedin(r):
+            if "contact_person" in task.must_have and not cf.get("contact_persons"):
                 continue
 
-            # 4. Designation Keywords Check
+            if "email" in task.must_not_have and cf.get("emails"):
+                continue
+            if "phone" in task.must_not_have and cf.get("phones"):
+                continue
+            if "linkedin" in task.must_not_have and cf.get("linkedin"):
+                continue
+
             if task.designation_keywords:
                 p_desig = (extract_person_info(r).get("designation") or "").lower()
                 matched_desig = any(
@@ -819,8 +1066,6 @@ async def execute_planned_task(
                 seen_ids.add(rec_id)
                 filtered_for_company.append(r)
 
-        # If designation keyword was requested and company matched but 0 contacts matched role:
-        # Still list company with "No data available" for person and designation (Step 4 requirement)
         if not filtered_for_company and task.designation_keywords and raw_candidates:
             first_raw = dict(raw_candidates[0])
             first_raw["person"] = "No data available"
@@ -835,13 +1080,28 @@ async def execute_planned_task(
             sugg = multi_res.get("suggestions", [])
             unfound_list.append((c_name, sugg))
 
-    # Build section header
+        if task.must_have:
+            q_low = raw_query.lower() if raw_query else ""
+            for f in task.must_have:
+                matched_phrase = "available"
+                for w in AVAILABILITY_WORDS:
+                    if w in q_low:
+                        matched_phrase = w
+                        break
+                all_filter_events.append({
+                    "filter": f,
+                    "count_before": len(raw_candidates),
+                    "count_after": len(filtered_for_company),
+                    "matched_phrase": matched_phrase
+                })
+
     total_req = len(companies_to_query)
     total_found = len(found_by_company)
     total_records = len(all_matched_records)
 
     if total_req > 1:
-        hdr = f"You asked for {total_req} companies. Found {total_found}."
+        company_names_str = ", ".join(found_by_company.keys())
+        hdr = f"Found {total_found} {'company' if total_found == 1 else 'companies'} ({company_names_str}), {total_records} records."
         if unfound_list:
             unf_parts = []
             for name, sugg in unfound_list:
@@ -850,23 +1110,42 @@ async def execute_planned_task(
                 else:
                     unf_parts.append(name)
             hdr += f" Not found: {', '.join(unf_parts)}."
-        hdr += f" Total {total_records} records from {total_found} companies."
     else:
-        single_name = companies_to_query[0]
+        single_name = companies_to_query[0] if companies_to_query else "query"
+        disp_name = single_name.upper() if len(single_name) <= 4 else single_name.title()
         if total_records > 0:
-            filter_desc = []
-            if task.city:
-                filter_desc.append(f"in {task.city.title()}")
-            if "email" in task.must_have:
-                filter_desc.append("with email")
-            elif "email" in task.must_not_have:
-                filter_desc.append("without email")
-            if task.designation_keywords:
-                filter_desc.append("with matching designation")
+            if "contact" in task.must_have:
+                cnt_before = total_candidates_before
+                cnt_after = total_records
+                cnt_without = cnt_before - cnt_after
+                hdr = f"Found {cnt_before} {disp_name} records. {cnt_after} have contact details (email or phone), {cnt_without} do not. Showing the {cnt_after}."
+            elif "email" in task.must_have and "phone" in task.must_have:
+                cnt_before = total_candidates_before
+                cnt_after = total_records
+                cnt_without = cnt_before - cnt_after
+                hdr = f"Found {cnt_before} {disp_name} records. {cnt_after} have both phone and email, {cnt_without} do not. Showing the {cnt_after}."
+            elif "email" in task.must_have:
+                cnt_before = total_candidates_before
+                cnt_after = total_records
+                cnt_without = cnt_before - cnt_after
+                hdr = f"Found {cnt_before} {disp_name} records. {cnt_after} have an email, {cnt_without} do not. Showing the {cnt_after}."
+            elif "phone" in task.must_have:
+                cnt_before = total_candidates_before
+                cnt_after = total_records
+                cnt_without = cnt_before - cnt_after
+                hdr = f"Found {cnt_before} {disp_name} records. {cnt_after} have a phone, {cnt_without} do not. Showing the {cnt_after}."
+            else:
+                filter_desc = []
+                if task.city:
+                    filter_desc.append(f"in {task.city.title()}")
+                if "email" in task.must_not_have:
+                    filter_desc.append("without email")
+                if task.designation_keywords:
+                    filter_desc.append("with matching designation")
 
-            f_str = (" " + " ".join(filter_desc)) if filter_desc else ""
-            emails_count = sum(1 for r in all_matched_records if extract_emails(r))
-            hdr = f"Found {total_records} records matching '{single_name}'{f_str}. {emails_count} contacts have an email."
+                f_str = (" " + " ".join(filter_desc)) if filter_desc else ""
+                emails_count = sum(1 for r in all_matched_records if get_contact_fields(r).get("emails"))
+                hdr = f"Found {total_records} records matching '{single_name}'{f_str}. {emails_count} contacts have an email."
         else:
             sugg = unfound_list[0][1] if unfound_list else []
             if sugg:
@@ -884,11 +1163,17 @@ async def execute_planned_task(
         "found_by_company": found_by_company,
         "unfound_list": unfound_list,
         "records": all_matched_records[:limit],
+        "vector_only_records": all_vector_only_records,
+        "raw_vector_records": all_raw_vector_records,
+        "top_vector_scores": top_vector_scores,
         "total": len(all_matched_records[:limit]),
         "cap_hit": cap_hit,
         "stages": stage_metrics,
         "keyword_hits": total_keyword_hits,
-        "vector_hits": total_vector_hits
+        "vector_hits": total_vector_hits,
+        "vector_hits_raw": total_vector_hits_raw,
+        "candidates_before_filter": total_candidates_before,
+        "filter_events": all_filter_events
     }
 
 
@@ -900,38 +1185,49 @@ async def execute_planned_retrieval(
 ) -> Dict[str, Any]:
     """
     Executes all tasks in the QueryPlan sequentially/concurrently.
-    Preserves task sections and order.
+    Preserves task sections, headers, and telemetry metrics.
     """
     task_results = []
     all_records = []
+    all_vector_only = []
+    all_raw_vector = []
     seen_ids = set()
 
     for task in plan.tasks:
-        t_res = await execute_planned_task(task, target_dataset=target_dataset, limit=limit)
+        t_res = await execute_planned_task(task, target_dataset=target_dataset, limit=limit, raw_query=raw_query)
         task_results.append(t_res)
         for r in t_res.get("records", []):
             rec_id = str(r.get("_id") or id(r))
             if rec_id not in seen_ids:
                 seen_ids.add(rec_id)
                 all_records.append(r)
+        all_vector_only.extend(t_res.get("vector_only_records", []))
+        all_raw_vector.extend(t_res.get("raw_vector_records", []))
 
-    # Combine headers across tasks
     headers = [t["summary_header"] for t in task_results if t.get("summary_header")]
     combined_header = "\n\n".join(headers)
 
     tot_kw = sum(t.get("keyword_hits", 0) for t in task_results)
     tot_vec = sum(t.get("vector_hits", 0) for t in task_results)
+    tot_vec_raw = sum(t.get("vector_hits_raw", 0) for t in task_results)
     stages = {"A": 0, "B": 0, "C": 0, "D": 0, "E": 0, "vector": 0}
     for t in task_results:
         for k_st, count in t.get("stages", {}).items():
             stages[k_st] = stages.get(k_st, 0) + count
 
     all_unfound = [item for t in task_results for item in t.get("unfound_list", [])]
+    top_vector_scores = [r.get("vector_score", 0.0) for r in all_raw_vector[:10]]
+    all_filter_events = [item for t in task_results for item in t.get("filter_events", [])]
+    total_candidates_before = sum(t.get("candidates_before_filter", 0) for t in task_results)
 
     return {
         "summary_header": combined_header,
         "task_results": task_results,
         "records": all_records[:limit],
+        "vector_only_records": all_vector_only,
+        "raw_vector_records": all_raw_vector,
+        "vector_records": all_raw_vector,
+        "top_vector_scores": top_vector_scores,
         "total": len(all_records[:limit]),
         "unfound_list": all_unfound,
         "unfound": all_unfound,
@@ -939,5 +1235,8 @@ async def execute_planned_retrieval(
         "stages": stages,
         "keyword_hits": tot_kw,
         "vector_hits": tot_vec,
+        "vector_hits_raw": tot_vec_raw,
+        "candidates_before_filter": total_candidates_before,
+        "filter_events": all_filter_events,
         "plan": plan.model_dump()
     }

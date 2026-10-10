@@ -105,12 +105,12 @@ def execute_keyword_company_search(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """
     Step 3A: Complete keyword retrieval on norm_company (fallback to company fields if norm_company empty).
-    - Exact
-    - Starts-with N then space or end
-    - Whole-word phrase inside
-    - All tokens as whole words (only when N has 2+ tokens)
-    - Names of <= 3 chars: whole-word match ONLY.
-    - NEVER matches against search_text.
+    - Exact (Stage A)
+    - Starts-with N then space or end (Stage B)
+    - Whole-word phrase inside (Stage C)
+    - All tokens as whole words (Stage D, only when N has 2+ tokens)
+    - Short acronyms (<= 3 chars): whole-word match ONLY.
+    - Strict deduplication by str(_id) immediately upon combining, BEFORE counting, filtering, or returning.
     """
     n_norm = normalize_company(raw_name)
     if not n_norm:
@@ -119,7 +119,7 @@ def execute_keyword_company_search(
     tokens = [t for t in n_norm.split() if len(t) >= 1]
     stage_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
     seen_ids = set()
-    records: List[Dict[str, Any]] = []
+    raw_records: List[Dict[str, Any]] = []
 
     def run_query(query_filter: Dict[str, Any], stage_label: str, stage_key: str):
         if target_dataset != "all":
@@ -133,7 +133,8 @@ def execute_keyword_company_search(
                         seen_ids.add(doc_id)
                         doc["source_collection"] = c_name
                         doc["stage"] = stage_label
-                        records.append(doc)
+                        doc["_id"] = doc_id
+                        raw_records.append(doc)
                         stage_counts[stage_key] += 1
             except Exception as e:
                 logger.warning(f"Keyword search error in {c_name} for {stage_label}: {e}")
@@ -151,71 +152,79 @@ def execute_keyword_company_search(
             ]
         }
         run_query(q, "Stage C (Whole-Word Acronym)", "C")
-        return records, stage_counts
-
-    # Case 2: Standard company names (> 3 characters)
-    # Stage A: Exact
-    exact_regex = f"^{re.escape(n_norm)}$"
-    q_a = {
-        "$or": [
-            {"norm_company": n_norm},
-            {"norm_company": {"$regex": exact_regex, "$options": "i"}},
-            {"$and": [
-                {"norm_company": {"$in": [None, ""]}},
-                {"company": {"$regex": exact_regex, "$options": "i"}}
-            ]}
-        ]
-    }
-    run_query(q_a, "Stage A (Exact)", "A")
-
-    # Stage B: Starts-with
-    start_regex = f"^{re.escape(n_norm)}(\\s|$)"
-    q_b = {
-        "$or": [
-            {"norm_company": {"$regex": start_regex, "$options": "i"}},
-            {"$and": [
-                {"norm_company": {"$in": [None, ""]}},
-                {"company": {"$regex": start_regex, "$options": "i"}}
-            ]}
-        ]
-    }
-    run_query(q_b, "Stage B (Starts-With)", "B")
-
-    # Stage C: Whole-word phrase inside
-    word_regex = rf"(^|\s){re.escape(n_norm)}(\s|$)"
-    q_c = {
-        "$or": [
-            {"norm_company": {"$regex": word_regex, "$options": "i"}},
-            {"$and": [
-                {"norm_company": {"$in": [None, ""]}},
-                {"company": {"$regex": word_regex, "$options": "i"}}
-            ]}
-        ]
-    }
-    run_query(q_c, "Stage C (Whole-Word Phrase)", "C")
-
-    # Stage D: All tokens as whole words (only when 2+ tokens)
-    if len(tokens) >= 2:
-        token_ands = [
-            {"norm_company": {"$regex": rf"(^|\s){re.escape(t)}(\s|$)", "$options": "i"}}
-            for t in tokens
-        ]
-        token_ands_fallback = [
-            {"company": {"$regex": rf"(^|\s){re.escape(t)}(\s|$)", "$options": "i"}}
-            for t in tokens
-        ]
-        q_d = {
+    else:
+        # Case 2: Standard company names (> 3 characters)
+        # Stage A: Exact
+        exact_regex = f"^{re.escape(n_norm)}$"
+        q_a = {
             "$or": [
-                {"$and": token_ands},
+                {"norm_company": n_norm},
+                {"norm_company": {"$regex": exact_regex, "$options": "i"}},
                 {"$and": [
                     {"norm_company": {"$in": [None, ""]}},
-                    {"$and": token_ands_fallback}
+                    {"company": {"$regex": exact_regex, "$options": "i"}}
                 ]}
             ]
         }
-        run_query(q_d, "Stage D (All Tokens Whole-Word)", "D")
+        run_query(q_a, "Stage A (Exact)", "A")
 
-    return records, stage_counts
+        # Stage B: Starts-with
+        start_regex = f"^{re.escape(n_norm)}(\\s|$)"
+        q_b = {
+            "$or": [
+                {"norm_company": {"$regex": start_regex, "$options": "i"}},
+                {"$and": [
+                    {"norm_company": {"$in": [None, ""]}},
+                    {"company": {"$regex": start_regex, "$options": "i"}}
+                ]}
+            ]
+        }
+        run_query(q_b, "Stage B (Starts-With)", "B")
+
+        # Stage C: Whole-word phrase inside
+        word_regex = rf"(^|\s){re.escape(n_norm)}(\s|$)"
+        q_c = {
+            "$or": [
+                {"norm_company": {"$regex": word_regex, "$options": "i"}},
+                {"$and": [
+                    {"norm_company": {"$in": [None, ""]}},
+                    {"company": {"$regex": word_regex, "$options": "i"}}
+                ]}
+            ]
+        }
+        run_query(q_c, "Stage C (Whole-Word Phrase)", "C")
+
+        # Stage D: All tokens as whole words (only when 2+ tokens)
+        if len(tokens) >= 2:
+            token_ands = [
+                {"norm_company": {"$regex": rf"(^|\s){re.escape(t)}(\s|$)", "$options": "i"}}
+                for t in tokens
+            ]
+            token_ands_fallback = [
+                {"company": {"$regex": rf"(^|\s){re.escape(t)}(\s|$)", "$options": "i"}}
+                for t in tokens
+            ]
+            q_d = {
+                "$or": [
+                    {"$and": token_ands},
+                    {"$and": [
+                        {"norm_company": {"$in": [None, ""]}},
+                        {"$and": token_ands_fallback}
+                    ]}
+                ]
+            }
+            run_query(q_d, "Stage D (All Tokens Whole-Word)", "D")
+
+    # Final immediate deduplication by str(_id)
+    deduped_records: List[Dict[str, Any]] = []
+    final_seen = set()
+    for r in raw_records:
+        rid = str(r.get("_id") or r.get("id"))
+        if rid not in final_seen:
+            final_seen.add(rid)
+            deduped_records.append(r)
+
+    return deduped_records, stage_counts
 
 
 async def execute_vector_retrieval(
@@ -223,16 +232,18 @@ async def execute_vector_retrieval(
     original_query: str,
     target_dataset: str = "all",
     city_filter: Optional[str] = None
-) -> Tuple[List[Dict[str, Any]], bool]:
+) -> Tuple[List[Dict[str, Any]], bool, List[Dict[str, Any]], bool]:
     """
     Step 3B: Runs nomic-embed-text Vector Search with "search_query: " prefix.
     numCandidates=200, limit=30.
+    Projects score via {"score": {"$meta": "vectorSearchScore"}}.
     Retries without filter if 0 results returned.
-    Logs top 5 vector scores.
+    Logs top 5 scores and company name + _id for top 10 hits.
+    Returns (kept_vector_records, fallback_used, raw_vector_records, retried_without_filter).
     """
     query_text = original_query.strip()
     if not query_text:
-        return [], False
+        return [], False, [], False
 
     # Prefix query for nomic-embed-text
     formatted_query = f"search_query: {query_text}"
@@ -244,12 +255,13 @@ async def execute_vector_retrieval(
 
     if not query_vector or len(query_vector) != EMBEDDING_DIM:
         logger.warning("[Vector Search EMPTY] Could not generate embedding. Falling back to keyword search.")
-        return [], True
+        return [], True, [], False
 
     collections = list(dict.fromkeys(get_configured_collection_names() + ["dataset_records"]))
-    vector_records = []
+    raw_vector_records = []
     seen_ids = set()
     fallback_used = False
+    retried_without_filter = False
 
     search_filter: Dict[str, Any] = {}
     if target_dataset != "all":
@@ -281,7 +293,7 @@ async def execute_vector_retrieval(
             cursor = db[c_name].aggregate(pipeline)
             docs = list(cursor)
             if not docs and search_filter:
-                # Retry without filter (Task requirement)
+                retried_without_filter = True
                 logger.info(f"[Vector Search] 0 hits with filter, retrying without filter in {c_name}...")
                 pipeline_no_filter = [
                     {
@@ -305,29 +317,43 @@ async def execute_vector_retrieval(
 
             for d in docs:
                 d_id = str(d.get("_id") or d.get("id"))
-                score = float(d.get("score", 0.0))
+                raw_score = d.get("score")
+                if raw_score is None:
+                    logger.warning(f"[Vector Search BUG] Missing vectorSearchScore on document {d_id}")
+                    score = 1.0
+                else:
+                    score = float(raw_score)
+
                 if d_id not in seen_ids:
                     seen_ids.add(d_id)
                     d["source_collection"] = c_name
+                    d["_id"] = d_id
                     d["vector_score"] = score
                     d["stage"] = "Vector ($vectorSearch)"
-                    vector_records.append(d)
+                    raw_vector_records.append(d)
 
         except Exception as e:
             logger.warning(f"[Vector Search ERROR] {type(e).__name__}: {e}")
             fallback_used = True
 
-    # Keep hits above configured score threshold and log top 5 scores
-    vector_records.sort(key=lambda x: x.get("vector_score", 0.0), reverse=True)
-    top_scores = [round(r.get("vector_score", 0.0), 3) for r in vector_records[:5]]
-    logger.info(f"[Vector Search] Top 5 scores for '{query_text}': {top_scores}")
+    # Sort all raw vector hits descending by score
+    raw_vector_records.sort(key=lambda x: x.get("vector_score", 0.0), reverse=True)
+    top_scores = [round(r.get("vector_score", 0.0), 4) for r in raw_vector_records[:5]]
+    top_10_log = [
+        {"_id": str(r.get("_id", "")), "company": str(r.get("company", "") or r.get("Company", "")), "score": round(r.get("vector_score", 0.0), 4)}
+        for r in raw_vector_records[:10]
+    ]
+    logger.info(f"[Vector Search] Top 5 scores for '{query_text}': {top_scores} | Top 10 hits: {top_10_log}")
 
+    # Threshold filtering
     kept_vector_records = [
-        r for r in vector_records
+        r for r in raw_vector_records
         if r.get("vector_score", 0.0) >= VECTOR_SIMILARITY_THRESHOLD
     ]
+    dropped_count = len(raw_vector_records) - len(kept_vector_records)
+    logger.info(f"[Vector Search] Total raw hits: {len(raw_vector_records)}, Passing threshold (>= {VECTOR_SIMILARITY_THRESHOLD}): {len(kept_vector_records)}, Dropped: {dropped_count}")
 
-    return kept_vector_records, fallback_used
+    return kept_vector_records, fallback_used, raw_vector_records, retried_without_filter
 
 
 def get_did_you_mean_suggestions(core_name: str, limit: int = 3) -> List[str]:
@@ -361,8 +387,8 @@ async def execute_multi_stage_retrieval(
     Step 3 Hybrid Retrieval:
     - Runs Keyword (Stage A-D) and Vector retrieval in parallel.
     - Merges with RRF (k=60), boosting keyword exact/phrase matches.
-    - Keyword matches are the main list.
-    - Vector-only hits go into a separate group "Related results" below it.
+    - Keyword matches are the authoritative main list.
+    - Vector-only hits that pass the threshold form a separate 'Related results' list.
     - Never replace, hide, or mix vector hits into keyword list.
     """
     t0 = time.time()
@@ -384,7 +410,7 @@ async def execute_multi_stage_retrieval(
         city_filter=city_filter
     )
 
-    (keyword_records, stage_counts), (vector_records, fallback_used) = await asyncio.gather(
+    (keyword_records, stage_counts), (vector_records, fallback_used, raw_vector_records, retried_no_filter) = await asyncio.gather(
         keyword_future,
         vector_future
     )
@@ -395,16 +421,23 @@ async def execute_multi_stage_retrieval(
         if str(r.get("_id") or r.get("id")) not in keyword_ids
     ]
 
-    # Suggestions if 0 keyword matches
-    suggestions = []
-    if not keyword_records:
-        suggestions = get_did_you_mean_suggestions(raw_query)
+    from ..services.response_generator import extract_company_name
+    from ..utils.normalization import is_company_match
 
-    # Combine main records: If keyword matches exist for the company name, they are authoritative
-    if keyword_records:
-        final_records = list(keyword_records)
+    filtered_kw = [r for r in keyword_records if is_company_match(raw_query, extract_company_name(r))]
+    filtered_vec = [r for r in vector_records if is_company_match(raw_query, extract_company_name(r))]
+
+    if filtered_kw:
+        final_records = filtered_kw
+    elif filtered_vec:
+        final_records = filtered_vec
     else:
-        final_records = list(vector_records)
+        final_records = []
+
+    # Suggestions if 0 valid matches
+    suggestions = []
+    if not final_records:
+        suggestions = get_did_you_mean_suggestions(raw_query)
 
     elapsed_ms = int((time.time() - t0) * 1000)
     logger.info(
@@ -412,14 +445,21 @@ async def execute_multi_stage_retrieval(
         f"total={len(final_records)} fallback={'yes' if fallback_used else 'no'} {elapsed_ms}ms"
     )
 
+    top_vector_scores = [r.get("vector_score", 0.0) for r in raw_vector_records[:10]]
+
     return {
         "records": final_records,
         "keyword_records": keyword_records,
         "vector_records": vector_records,
+        "raw_vector_records": raw_vector_records,
         "vector_only_records": vector_only_records,
+        "top_vector_scores": top_vector_scores,
         "stages": {**stage_counts, "vector": len(vector_records)},
         "keyword_hits": len(keyword_records),
         "vector_hits": len(vector_records),
+        "vector_hits_raw": len(raw_vector_records),
+        "vector_fallback_used": fallback_used,
+        "filter_retried_without_filter": retried_no_filter,
         "suggestions": suggestions,
         "fallback_used": fallback_used,
         "latency_ms": elapsed_ms

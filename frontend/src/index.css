@@ -3,6 +3,18 @@
    ========================================================================== */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/* ── Viewport & Scroll Locking (Prevents header bounce/swipe dislodging) ── */
+html, body, #root {
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: none !important;
+  overscroll-behavior-y: none !important;
+  touch-action: pan-y;
+}
+
 /* ── Invisible Scrollbars (Clean UI without visible right-side scrollbar lines) ── */
 * {
   scrollbar-width: none !important;
@@ -3909,5 +3921,87 @@ body {
 .dashed-dropzone:hover {
   border-color: #0284c7;
 }
+
+/* ==========================================================================
+   Responsive Utilities & Device Adaptations
+   ========================================================================== */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+  width: 100%;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Safe area inset support for mobile bottom bars */
+footer {
+  padding-bottom: max(0.65rem, env(safe-area-inset-bottom));
+}
+
+/* Responsive Table Wrapper Protection */
+.table-responsive-container,
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+/* Break-word utility for long URLs/emails/tokens */
+.break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Mobile & Tablet Specific Responsive Breakpoints */
+@media (max-width: 768px) {
+  .glow-search-bar {
+    box-shadow: 0 4px 18px rgba(2, 132, 199, 0.12), 0 1px 4px rgba(15, 23, 42, 0.05);
+  }
+
+  .atlas-result-card {
+    padding: 0.85rem;
+  }
+
+  .atlas-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .atlas-header-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .atlas-field-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+
+  .atlas-field-val {
+    max-width: 100%;
+    text-align: left;
+  }
+}
+
+@media (max-width: 480px) {
+  .atlas-modal-card,
+  .atlas-upload-modal-content {
+    padding: 1rem;
+    border-radius: 1rem;
+  }
+
+  .lookup-field-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+
+  .lookup-field-label {
+    min-width: unset;
+  }
+}
+
 
 

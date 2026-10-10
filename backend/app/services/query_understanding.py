@@ -418,19 +418,19 @@ def fallback_query_understanding(user_query: str) -> StructuredQuery:
     # Email required / missing
     if missing_filter == "email" or re.search(r"\b(without\s+(?:an?\s+)?(?:email|emails|e-mail|mail\s*ids?|mail)|no\s+(?:email|emails|mail)|email\s+(?:is\s+)?(?:not\s+available|unavailable|missing)|don'?t\s+have\s+(?:an?\s+)?(?:email|mail)|does\s+not\s+have\s+(?:an?\s+)?(?:email|mail))\b", q_lower):
         email_required = False
-    elif re.search(r"\b(?:whose\s+email\s+is\s+available|where\s+(?:an?\s+)?(?:emails?|email\s*ids?|mail\s*ids?|mail)\s+(?:are\s+|is\s+)?available|with\s+(?:an?\s+)?(?:email|emails|e-mail|mail\s*ids?|mail)|having\s+(?:an?\s+)?(?:email|e-mail|mail\s*ids?|mail\s*id|mail)|email\s+available|emails?\s+available|emails?\s+are\s+available|email\s+is\s+available|has\s+(?:an?\s+)?(?:email|email\s*address)|have\s+(?:an?\s+)?(?:email|email\s*addresses|email\s*ids?|emails)|only\s+show\s+(?:the\s+ones\s+that\s+)?have\s+email|email\s+exists|which\s+have\s+email|having\s+mail\s*id|which\s+are\s+having\s+mail\s*id)\b", q_lower):
+    elif re.search(r"\b(?:whose\s+email\s+is\s+available|where\s+(?:an?\s+)?(?:emails?|email\s*ids?|mail\s*ids?|mail)\s+(?:are\s+|is\s+)?available|with\s+(?:an?\s+)?(?:email|emails|e-mail|mail\s*ids?|mail)|having\s+(?:an?\s+)?(?:email|e-mail|mail\s*ids?|mail\s*id|mail)|emails?\s+(?:are\s+|is\s+)?available|email\s+ids?\s+(?:are\s+|is\s+)?available|mail\s*ids?\s+(?:are\s+|is\s+)?available|email\s+available|emails?\s+available|email\s+is\s+available|has\s+(?:an?\s+)?(?:email|email\s*address)|have\s+(?:an?\s+)?(?:email|email\s*addresses|email\s*ids?|emails)|only\s+show\s+(?:the\s+ones\s+that\s+)?have\s+email|email\s+exists|which\s+have\s+email|having\s+mail\s*id|which\s+are\s+having\s+mail\s*id)\b", q_lower):
         email_required = True
 
     # Phone required / missing
-    if missing_filter == "phone" or re.search(r"\b(without\s+(?:a\s+)?(?:phone|mobile|contact\s*numbers?|telephone)|no\s+(?:phone|mobile|contact\s*numbers?)|phone\s+(?:is\s+)?(?:not\s+available|unavailable)|don'?t\s+have\s+(?:a\s+)?(?:phone|contact\s*number))\b", q_lower):
+    if missing_filter == "phone" or re.search(r"\b(without\s+(?:a\s+)?(?:phone|phones|mobile|mobiles|contact\s*numbers?|telephone)|no\s+(?:phone|phones|mobile|mobiles|contact\s*numbers?)|phone\s+(?:is\s+)?(?:not\s+available|unavailable)|contact\s*numbers?\s+(?:is\s+|are\s+)?(?:not\s+available|unavailable)|don'?t\s+have\s+(?:a\s+)?(?:phone|contact\s*number))\b", q_lower):
         phone_required = False
-    elif re.search(r"\b(with\s+(?:a\s+)?(?:phone|phones|mobile|contact\s*numbers?|telephone)|having\s+(?:a\s+)?(?:phone|mobile|contact\s*numbers?)|phone\s+available|phone\s+numbers?\s+available|have\s+(?:phone\s+numbers?|contact\s*numbers?)|has\s+(?:a\s+)?phone)\b", q_lower):
+    elif re.search(r"\b(?:where\s+(?:a\s+)?(?:phone|contact\s*numbers?|mobile)\s*(?:is\s+|are\s+)?available|whose\s+(?:phone|contact\s*numbers?)\s*(?:is\s+|are\s+)?available|with\s+(?:a\s+)?(?:phone|phones|mobile|mobiles|contact\s*numbers?|telephone)|having\s+(?:a\s+)?(?:phone|mobile|contact\s*numbers?)|contact\s*numbers?\s*(?:is\s+|are\s+)?available|phone\s*numbers?\s*(?:is\s+|are\s+)?available|phone\s+available|mobile\s+available|phones?\s+available|have\s+(?:phone\s*numbers?|contact\s*numbers?|phone|phones)|has\s+(?:a\s+)?(?:phone|contact\s*number))\b", q_lower):
         phone_required = True
 
     # LinkedIn required / missing
     if missing_filter == "linkedin" or re.search(r"\b(without\s+(?:a\s+)?linkedin|no\s+linkedin|linkedin\s+(?:is\s+)?(?:not\s+available|unavailable))\b", q_lower):
         linkedin_required = False
-    elif re.search(r"\b(with\s+(?:a\s+)?linkedin|contacts\s+with\s+linkedin|having\s+(?:a\s+)?linkedin|linkedin\s+available|has\s+linkedin)\b", q_lower):
+    elif re.search(r"\b(with\s+(?:a\s+)?linkedin|contacts\s+with\s+linkedin|having\s+(?:a\s+)?linkedin|linkedin\s+(?:is\s+)?available|has\s+linkedin)\b", q_lower):
         linkedin_required = True
 
     # 2. Pure conceptual/semantic query detection
@@ -566,20 +566,22 @@ def fallback_query_understanding(user_query: str) -> StructuredQuery:
 
             # Strip availability clauses and field specifiers first
             avail_pattern = (
-                r"\b(?:where\s+(?:an?\s+)?(?:emails?|email\s*ids?|mail\s*ids?|phones?|contact\s*numbers?|linkedin)\s*(?:are\s+|is\s+)?available\??|"
-                r"where\s+(?:an?\s+)?(?:emails?|email\s*ids?|mail\s*ids?|phones?|contact\s*numbers?|linkedin)\s*available\??|"
-                r"whose\s+email\s+is\s+available|where\s+email\s+ids?\s+are\s+available|"
-                r"with\s+(?:an?\s+)?(?:email|emails|e-mail|mail\s*ids?|mail|phone|mobile|contact\s*numbers?|telephone|linkedin)|"
-                r"having\s+(?:an?\s+)?(?:email|e-mail|mail\s*ids?|mail\s*id|mail|phone|mobile|contact\s*numbers?|linkedin)|"
-                r"without\s+(?:an?\s+)?(?:email|e-mail|mail\s*ids?|mail|phone|mobile|contact\s*numbers?|linkedin)|"
-                r"emails?\s+(?:are\s+|is\s+)?available\??|phones?\s+(?:are\s+|is\s+)?available\??|linkedin\s+(?:is\s+)?available\??|"
-                r"no\s+email|no\s+phone|no\s+linkedin|"
+                r"\b(?:where\s+(?:an?\s+)?(?:emails?|email\s*ids?|mail\s*ids?|phones?|contact\s*numbers?|telephone|mobile|linkedin)\s*(?:are\s+|is\s+)?available\??|"
+                r"where\s+(?:an?\s+)?(?:emails?|email\s*ids?|mail\s*ids?|phones?|contact\s*numbers?|telephone|mobile|linkedin)\s*available\??|"
+                r"whose\s+(?:email|emails|phone|contact\s*numbers?|linkedin)\s*(?:is\s+|are\s+)?available|"
+                r"where\s+email\s+ids?\s+are\s+available|"
+                r"with\s+(?:an?\s+)?(?:email|emails|e-mail|mail\s*ids?|mail|phone|mobile|mobiles|contact\s*numbers?|telephone|linkedin)|"
+                r"having\s+(?:an?\s+)?(?:email|e-mail|mail\s*ids?|mail\s*id|mail|phone|mobile|mobiles|contact\s*numbers?|linkedin)|"
+                r"without\s+(?:an?\s+)?(?:email|e-mail|mail\s*ids?|mail|phone|mobile|mobiles|contact\s*numbers?|linkedin)|"
+                r"(?:contact\s*numbers?|phone\s*numbers?|phones?|emails?|mail\s*ids?|email\s*ids?|linkedin)\s*(?:are\s+|is\s+)?available\??|"
+                r"(?:contact\s*numbers?|phone\s*numbers?|phones?|emails?|mail\s*ids?|email\s*ids?|linkedin)\s*available\??|"
+                r"no\s+email|no\s+phone|no\s+contact\s*number|no\s+linkedin|"
                 r"and\s+only\s+show\s+(?:the\s+ones\s+that\s+)?have\s+email|which\s+have\s+(?:email|email\s*ids?|emails)|which\s+are\s+having\s+mail\s*id|"
-                r"having\s+mail\s*id|don'?t\s+have\s+email|have\s+(?:email\s*ids?|email\s*addresses|email|emails|phone\s*numbers?|contact\s*numbers?)|"
-                r"has\s+(?:an?\s+)?(?:email\s*ids?|email\s*address|email|phone)|"
+                r"having\s+mail\s*id|don'?t\s+have\s+(?:email|phone)|have\s+(?:email\s*ids?|email\s*addresses|email|emails|phone\s*numbers?|contact\s*numbers?|phones?)|"
+                r"has\s+(?:an?\s+)?(?:email\s*ids?|email\s*address|email|phone|contact\s*number)|"
                 r"emails?\s+alone|phones?\s+alone|contacts?\s+alone|numbers?\s+alone|details\s+alone|"
                 r"only\s+emails?|only\s+phones?|only\s+contact\s+numbers?|only\s+numbers?|only\s+city|only\s+state|"
-                r"emails?|phones?|contact\s+numbers?|numbers?|mobiles?|linkedin)\b[?.]*"
+                r"contact\s+numbers?|phone\s+numbers?|emails?|phones?|mobiles?|linkedin)\b[?.]*"
             )
             comp_filter_clean = re.sub(avail_pattern, "", comp_filter_clean, flags=re.IGNORECASE).strip()
 
@@ -601,7 +603,13 @@ def fallback_query_understanding(user_query: str) -> StructuredQuery:
                 intent = "company_search"
             else:
                 prefix_pattern = (
-                    r"^(?:show\s+me|give\s+me\s+all|give\s+me|find|show|search\s+for|look\s+for|get|do\s+we\s+have|which|are\s+there\s+any|details\s+of|list\s+of\s+companies\s+in|companies\s+in|list\s+of|companies\s*:?|company\s*:?)\s+"
+                    r"^(?:i\s+need(?:\s+to\s+see)?|i\s+want(?:\s+to\s+see)?|i\s+would\s+like(?:\s+to\s+see)?|i\'d\s+like(?:\s+to\s+see)?|"
+                    r"i\s+am\s+looking\s+for|i\'m\s+looking\s+for|looking\s+for|"
+                    r"can\s+you\s+(?:please\s+)?(?:give\s+me|show\s+me|find|list|get|fetch|tell\s+me\s+about)|"
+                    r"could\s+you\s+(?:please\s+)?(?:give\s+me|show\s+me|find|list|get|fetch|tell\s+me\s+about)|"
+                    r"please\s+(?:give\s+me(?:\s+all)?|show\s+me(?:\s+all)?|show(?:\s+all)?|give(?:\s+all)?|list(?:\s+all)?|find(?:\s+all)?|provide(?:\s+me)?|get|fetch)|"
+                    r"show\s+me\s+all|give\s+me\s+all|show\s+me|give\s+me|find|show|search\s+for|search\s+all\s+uploaded\s+files\s+for|look\s+for|get|do\s+we\s+have|which|are\s+there\s+any|tell\s+me\s+about|fetch|display|retrieve|"
+                    r"details\s+of|information\s+of|info\s+of|list\s+of\s+companies\s+in|companies\s+in|list\s+of|companies\s*:?|company\s*:?)\s+"
                     r"|(?:give\s+me\s+)?(?:quality\s+)?contacts?\s+(?:of|from|at|in|for)\s+"
                     r"|^(?:find\s+)?companies\s+related\s+to\s+"
                     r"|^(?:who\s+are\s+the|what\s+are\s+the|list\s+all\s+companies\s+that\s+have|list\s+companies\s+that\s+have|companies\s+that\s+have|companies\s+having|companies\s+with)\s+"
@@ -615,15 +623,23 @@ def fallback_query_understanding(user_query: str) -> StructuredQuery:
                 standardized = re.sub(r"\s+(?:and|&)\s+", ", ", cmd_stripped, flags=re.IGNORECASE)
                 parts = [p.strip().rstrip("?.!") for p in standardized.split(",") if p.strip()]
 
+                STOP_WORDS = {
+                    "i", "need", "want", "like", "would", "can", "could", "you", "please",
+                    "give", "show", "find", "get", "fetch", "tell", "me", "about", "see",
+                    "available", "availability", "is", "are", "have", "has", "having", "with", "without",
+                    "the", "a", "an", "to", "for", "of", "in", "at", "from", "all", "every", "any", "some",
+                    "company", "companies", "firm", "firms", "list", "details", "records", "info", "data", "database",
+                    "alone", "only", "just", "where", "which", "who", "whose", "now", "their", "them", "they", "add", "also",
+                    "contact", "contacts", "person", "persons", "number", "numbers", "phone", "phones", "mobile", "mobiles",
+                    "email", "emails", "mail", "linkedin", "address", "city", "state",
+                    "another", "other", "others", "different", "next", "new", "same", "previous", "one"
+                }
+
                 cleaned_parts = []
                 for p in parts:
-                    p_clean = re.sub(
-                        r"\b(?:companies|company|firm|firms|list|details|records|info|data|all|contacts?|have|has|having|with|without|which|who|where|how\s+many|show|give|now|their|them|they|add|also|alone|only|just|emails?|phones?|numbers?|mobiles?|linkedin|address|city|state|another|other|others|different|next|new|same|previous|one)\b",
-                        "",
-                        p,
-                        flags=re.IGNORECASE
-                    ).strip()
-                    p_clean = re.sub(r"\s+", " ", p_clean).strip()
+                    words = p.split()
+                    meaningful_words = [w for w in words if w.lower() not in STOP_WORDS]
+                    p_clean = " ".join(meaningful_words).strip()
                     p_lower = p_clean.lower()
                     if not p_clean:
                         continue
