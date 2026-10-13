@@ -989,6 +989,7 @@ async def execute_planned_task(
     ]
     results = await asyncio.gather(*retrieval_tasks)
 
+    auto_corrected_names: Dict[str, str] = {}
     for c_name, multi_res in zip(companies_to_query, results):
         for k_st in stage_metrics:
             stage_metrics[k_st] += multi_res.get("stages", {}).get(k_st, 0)
@@ -1001,8 +1002,25 @@ async def execute_planned_task(
 
         if not multi_res.get("keyword_records"):
             sugg = multi_res.get("suggestions", [])
-            unfound_list.append((c_name, sugg))
-            continue
+            auto_corrected_sugg = None
+            if sugg and len(sugg) > 0:
+                from rapidfuzz import fuzz
+                score = fuzz.ratio(c_name.lower().strip(), sugg[0].lower().strip())
+                if score >= 88.0:
+                    corrected_res = await execute_multi_stage_retrieval(
+                        raw_query=sugg[0],
+                        target_dataset=target_dataset,
+                        city_filter=task.city
+                    )
+                    if corrected_res.get("keyword_records"):
+                        logger.info(f"[Planner] Auto-corrected spelling mistake '{c_name}' -> '{sugg[0]}' (similarity {score:.1f}%)")
+                        multi_res = corrected_res
+                        auto_corrected_sugg = sugg[0]
+                        auto_corrected_names[c_name] = sugg[0]
+
+            if not auto_corrected_sugg and not multi_res.get("keyword_records"):
+                unfound_list.append((c_name, sugg))
+                continue
 
         raw_candidates = multi_res.get("records", [])
         total_candidates_before += len(raw_candidates)
@@ -1145,7 +1163,12 @@ async def execute_planned_task(
 
                 f_str = (" " + " ".join(filter_desc)) if filter_desc else ""
                 emails_count = sum(1 for r in all_matched_records if get_contact_fields(r).get("emails"))
-                hdr = f"Found {total_records} records matching '{single_name}'{f_str}. {emails_count} contacts have an email."
+                if single_name in auto_corrected_names:
+                    corr_name = auto_corrected_names[single_name]
+                    disp_corr = corr_name.upper() if len(corr_name) <= 4 else corr_name.title()
+                    hdr = f"Found {total_records} records matching '{disp_corr}' (corrected spelling from '{single_name}'){f_str}. {emails_count} contacts have an email."
+                else:
+                    hdr = f"Found {total_records} records matching '{single_name}'{f_str}. {emails_count} contacts have an email."
         else:
             sugg = unfound_list[0][1] if unfound_list else []
             if sugg:

@@ -156,4 +156,67 @@ describe('ChatMessage UI & Filter Tests', () => {
     fireEvent.click(clearBtn);
     expect(container.textContent).toMatch(/Showing\s+1\s*[–-]\s*9\s+of\s+70\s+records/);
   });
+
+  it('displays query label in FilterBar and top results toolbar when userQuery is present', () => {
+    const mockData = createMockDataset(98, 50, 20, 10);
+    const message = {
+      id: 'assistant-test-query',
+      role: 'assistant',
+      loading: false,
+      found: true,
+      data: mockData,
+      userQuery: 'tvs',
+    };
+
+    const { container } = render(<ChatMessage message={message} />);
+
+    // FilterBar shows 'Showing 98 of 98 records of "tvs"'
+    expect(container.textContent).toContain('Showing 98 of 98 records of "tvs"');
+
+    // Top results toolbar shows "Showing 1 – 9 of 98 records of tvs"
+    expect(container.textContent).toMatch(/Showing\s+1\s*[–-]\s*9\s+of\s+98\s+records of tvs/);
+  });
+
+  it('does not render filter sidebar when there is only a single result', () => {
+    const singleData = createMockDataset(1, 1);
+    const message = {
+      id: 'assistant-test-single',
+      role: 'assistant',
+      loading: false,
+      found: true,
+      data: singleData,
+    };
+
+    const { container } = render(<ChatMessage message={message} />);
+
+    // Filter sidebar should NOT be rendered for single result
+    expect(container.querySelector('aside')).toBeNull();
+    expect(container.querySelector('[data-purpose="filters-panel"]')).toBeNull();
+
+    // Company card is rendered
+    expect(screen.getByText('Company 1')).toBeInTheDocument();
+
+    // Toolbar shows "Showing 1 record"
+    expect(container.textContent).toMatch(/Showing\s+1\s+record/);
+  });
+
+  it('does not render filter sidebar for single result with userQuery and formats header cleanly', () => {
+    const singleData = createMockDataset(1, 1);
+    const message = {
+      id: 'assistant-test-single-query',
+      role: 'assistant',
+      loading: false,
+      found: true,
+      data: singleData,
+      userQuery: '2d inc',
+    };
+
+    const { container } = render(<ChatMessage message={message} />);
+
+    expect(container.querySelector('aside')).toBeNull();
+    expect(container.querySelector('[data-purpose="filters-panel"]')).toBeNull();
+    expect(screen.getByText('Company 1')).toBeInTheDocument();
+    expect(container.textContent).toMatch(/Showing\s+1\s+record of 2d inc/);
+  });
 });
+

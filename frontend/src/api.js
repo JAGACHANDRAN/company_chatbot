@@ -144,13 +144,20 @@ export async function logoutApi() {
  * @param {string|null} [datasetId] 
  * @returns {Promise<{success: boolean, found: boolean, count: number, dataset_id?: string, dataset_name?: string, data: any, query_intent?: any, message?: string}>}
  */
-export async function sendChatMessage(message, datasetId = null) {
+export async function sendChatMessage(message, datasetId = null, history = [], conversationId = null) {
   try {
     const payload = { message };
     if (datasetId && datasetId !== 'default' && datasetId !== 'all') {
       payload.dataset_id = datasetId;
     } else {
       payload.dataset_id = 'all';
+    }
+    if (history && history.length > 0) {
+      payload.history = history;
+    }
+    if (conversationId) {
+      payload.conversation_id = conversationId;
+      payload.session_id = conversationId;
     }
 
     const response = await fetch(`${API_BASE_URL}/api/chat`, {

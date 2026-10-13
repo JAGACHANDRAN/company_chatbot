@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import ChatMessage from './components/ChatMessage';
 import Sidebar from './components/Sidebar';
 import FileUploadModal from './components/FileUploadModal';
@@ -30,6 +30,13 @@ export default function App() {
 
   const [currentChatId, setCurrentChatId] = useState(null);
   const [messages, setMessages] = useState([]);
+  const hasSidebarInView = useMemo(() => {
+    return messages.some((m) => {
+      if (m.role !== 'assistant') return false;
+      if (Array.isArray(m.data) && m.data.length > 1) return true;
+      return false;
+    });
+  }, [messages]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [inspectingDoc, setInspectingDoc] = useState(null);
@@ -187,18 +194,23 @@ export default function App() {
         pendingScrollUserMsgId.current = null;
       }
     } else if (pendingScrollAssistantId.current && !loading) {
-      if (!userScrolledUpRef.current) {
-        const answerEl = document.getElementById(`msg-${pendingScrollAssistantId.current}`);
-        if (answerEl) {
-          const rect = answerEl.getBoundingClientRect();
-          const containerRect = scrollViewRef.current.getBoundingClientRect();
-          // Scroll so top of answer starts at top of chat area if off-screen
-          if (rect.top < containerRect.top || rect.top > containerRect.bottom - 80) {
-            answerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-        }
-      }
+      const targetAssistantId = pendingScrollAssistantId.current;
       pendingScrollAssistantId.current = null;
+      userScrolledUpRef.current = false;
+
+      const scrollToFirstCard = () => {
+        const answerEl = document.getElementById(`msg-${targetAssistantId}`);
+        if (answerEl && scrollViewRef.current) {
+          // Scroll so that the assistant message and its first result card start at top of view and are shown fully
+          answerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      };
+
+      // Defer to guarantee layout of result cards has rendered fully
+      requestAnimationFrame(() => {
+        scrollToFirstCard();
+        setTimeout(scrollToFirstCard, 100);
+      });
     }
   }, [messages, loading]);
 
@@ -368,6 +380,7 @@ export default function App() {
       loading: true,
     };
 
+    userScrolledUpRef.current = false;
     const newMessages = [...messages, userMsg, loadingMsg];
     setMessages(newMessages);
     pendingScrollUserMsgId.current = userMsg.id;
@@ -380,7 +393,16 @@ export default function App() {
     }
 
     try {
-      const response = await sendChatMessage(query, activeDatasetId);
+      const historyForApi = messages
+        .filter((m) => !m.loading)
+        .slice(-8)
+        .map((m) => ({
+          role: m.role || 'user',
+          content: m.text || m.message || (m.role === 'user' ? m.userQuery || '' : ''),
+          suggestions: m.suggestions || null,
+        }));
+
+      const response = await sendChatMessage(query, activeDatasetId, historyForApi, activeId);
       const assistantMsg = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
@@ -399,6 +421,7 @@ export default function App() {
         suggestions: response.suggestions,
         notes: response.notes,
         total: response.total,
+        userQuery: query,
       };
 
       const finalMessages = newMessages.map((msg) =>
@@ -919,7 +942,9 @@ export default function App() {
             className={`relative z-10 flex-1 flex flex-col select-none w-full overflow-hidden ${
               messages.length === 0
                 ? 'max-w-4xl justify-center items-center mx-auto px-2.5 sm:px-4 lg:px-6 -mt-6 sm:-mt-10'
-                : 'max-w-7xl 2xl:max-w-[1600px] justify-start items-start pt-1 sm:pt-2 px-1.5 sm:px-3 lg:px-4'
+                : hasSidebarInView
+                ? 'max-w-7xl 2xl:max-w-[1600px] justify-start items-start pt-1 sm:pt-2 px-1.5 sm:px-3 lg:px-4'
+                : 'max-w-4xl justify-start items-center mx-auto pt-1 sm:pt-2 px-1.5 sm:px-3 lg:px-4'
             }`}
           >
 
@@ -943,36 +968,22 @@ export default function App() {
                   ref={scrollViewRef}
                   onScroll={handleScroll}
                 >
-                  {messages.map((message) => (
-                    <div key={message.id} id={`msg-${message.id}`} className="w-full">
-                      <ChatMessage
-                        message={message}
-                        onInspect={(doc) => setInspectingDoc(doc)}
-                        onRunSearch={(searchQuery) => handleSendMessage(searchQuery)}
-                      />
-                    </div>
-                  ))}
-
-                  {/* Floating Jump to Latest button (arrow only) */}
-                  {showJumpToBottom && (
-                    <div className="sticky bottom-3 flex justify-center pointer-events-none z-30">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          scrollViewRef.current?.scrollTo({
-                            top: scrollViewRef.current.scrollHeight,
-                            behavior: 'smooth'
-                          });
-                          setShowJumpToBottom(false);
-                        }}
-                        className="pointer-events-auto w-9 h-9 rounded-full bg-white/95 backdrop-blur-md text-sky-600 hover:text-sky-700 hover:bg-sky-50 border border-sky-200 shadow-md hover:shadow-lg flex items-center justify-center transition-all cursor-pointer active:scale-90"
-                        title="Jump to latest"
-                        aria-label="Jump to latest"
-                      >
-                        <span className="material-symbols-outlined text-lg">arrow_downward</span>
-                      </button>
-                    </div>
-                  )}
+                  {messages.map((message, idx) => {
+                    const prevUserMsg = idx > 0 && messages[idx - 1]?.role === 'user' ? messages[idx - 1] : null;
+                    const effectiveMessage = {
+                      ...message,
+                      userQuery: message.userQuery || (message.role === 'assistant' ? prevUserMsg?.content || '' : ''),
+                    };
+                    return (
+                      <div key={message.id} id={`msg-${message.id}`} className="w-full">
+                        <ChatMessage
+                          message={effectiveMessage}
+                          onInspect={(doc) => setInspectingDoc(doc)}
+                          onRunSearch={(searchQuery) => handleSendMessage(searchQuery)}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -980,9 +991,33 @@ export default function App() {
           {/* END: MainContentArea */}
 
           {/* BEGIN: FloatingSearchInputArea */}
-          <footer className="relative z-20 w-full pb-2.5 sm:pb-4 md:pb-6 px-1.5 sm:px-3 lg:px-4 flex justify-start shrink-0">
+          <footer
+            className={`relative z-20 w-full pb-2.5 sm:pb-4 md:pb-6 px-1.5 sm:px-3 lg:px-4 flex ${
+              hasSidebarInView ? 'justify-start' : 'justify-center'
+            } shrink-0`}
+          >
             {messages.length === 0 ? (
-              <div className="w-full max-w-3xl mx-auto">
+              <div className="w-full max-w-3xl mx-auto relative">
+                {/* Floating Jump to Latest button (arrow only) - centered to text box */}
+                {showJumpToBottom && (
+                  <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        scrollViewRef.current?.scrollTo({
+                          top: scrollViewRef.current.scrollHeight,
+                          behavior: 'smooth'
+                        });
+                        setShowJumpToBottom(false);
+                      }}
+                      className="w-9 h-9 rounded-full bg-white/95 backdrop-blur-md text-sky-600 hover:text-sky-700 hover:bg-sky-50 border border-sky-200 shadow-md hover:shadow-lg flex items-center justify-center transition-all cursor-pointer active:scale-90"
+                      title="Jump to latest"
+                      aria-label="Jump to latest"
+                    >
+                      <span className="material-symbols-outlined text-lg">arrow_downward</span>
+                    </button>
+                  </div>
+                )}
                 {/* Glow Search Container */}
                 <div
                   className="glow-search-bar bg-white rounded-full flex items-center px-2.5 py-1.5 sm:px-4 sm:py-2.5 w-full"
@@ -1061,13 +1096,55 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div className="w-full max-w-7xl 2xl:max-w-[1600px] px-1 sm:px-3">
-                <div className="w-full flex flex-col md:flex-row items-start gap-4 lg:gap-6">
-                  {/* Invisible spacer matching aside exact width */}
-                  <div className="hidden md:block w-full md:w-72 lg:w-72 xl:w-80 shrink-0 pointer-events-none" aria-hidden="true" />
+              <div
+                className={`w-full ${
+                  hasSidebarInView
+                    ? 'max-w-7xl 2xl:max-w-[1600px] px-1 sm:px-3'
+                    : 'max-w-3xl mx-auto px-1 sm:px-3'
+                }`}
+              >
+                <div
+                  className={`w-full ${
+                    hasSidebarInView
+                      ? 'flex flex-col md:flex-row items-start gap-4 lg:gap-6'
+                      : 'max-w-3xl mx-auto'
+                  }`}
+                >
+                  {/* Invisible spacer matching aside exact width only when sidebar is present */}
+                  {hasSidebarInView && (
+                    <div
+                      className="hidden md:block w-full md:w-72 lg:w-72 xl:w-80 shrink-0 pointer-events-none"
+                      aria-hidden="true"
+                    />
+                  )}
 
                   {/* Input container exactly matching the results column */}
-                  <div className="flex-1 min-w-0 w-full max-w-3xl">
+                  <div
+                    className={`${
+                      hasSidebarInView ? 'flex-1 min-w-0' : 'mx-auto'
+                    } w-full max-w-3xl relative`}
+                  >
+                    {/* Floating Jump to Latest button (arrow only) - perfectly centered directly on the search box */}
+                    {showJumpToBottom && (
+                      <div className="absolute -top-12 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            scrollViewRef.current?.scrollTo({
+                              top: scrollViewRef.current.scrollHeight,
+                              behavior: 'smooth'
+                            });
+                            setShowJumpToBottom(false);
+                          }}
+                          className="w-9 h-9 rounded-full bg-white/95 backdrop-blur-md text-sky-600 hover:text-sky-700 hover:bg-sky-50 border border-sky-200 shadow-md hover:shadow-lg flex items-center justify-center transition-all cursor-pointer active:scale-90"
+                          title="Jump to latest"
+                          aria-label="Jump to latest"
+                        >
+                          <span className="material-symbols-outlined text-lg">arrow_downward</span>
+                        </button>
+                      </div>
+                    )}
+
                     <div
                       className="glow-search-bar bg-white rounded-full flex items-center px-2.5 py-1.5 sm:px-4 sm:py-2.5 w-full"
                       data-purpose="search-box-container"

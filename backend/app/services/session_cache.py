@@ -100,3 +100,51 @@ def clear_session(session_id: Optional[str]) -> None:
     sid = _clean_session_id(session_id)
     with _LOCK:
         _SESSIONS.pop(sid, None)
+
+
+def store_last_suggestions(
+    session_id: Optional[str],
+    suggestions: List[str],
+    original_query: Optional[str] = None,
+    unfound_names: Optional[List[str]] = None
+) -> None:
+    """Stores pending suggestions for conversational confirmation (e.g. 'Did you mean: X?' followed by 'yes')."""
+    sid = _clean_session_id(session_id)
+    with _LOCK:
+        for s in set([sid, "default_session"]):
+            if s not in _SESSIONS:
+                _SESSIONS[s] = {}
+            _SESSIONS[s]["last_suggestions"] = list(suggestions)
+            _SESSIONS[s]["last_suggested_query"] = original_query or ""
+            _SESSIONS[s]["last_unfound_names"] = list(unfound_names or [])
+            _SESSIONS[s]["suggestion_timestamp"] = time.time()
+
+
+def get_last_suggestions(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Retrieves pending suggestions if available and within TTL."""
+    sid = _clean_session_id(session_id)
+    with _LOCK:
+        data = _SESSIONS.get(sid) or _SESSIONS.get("default_session")
+        if not data:
+            return None
+        suggs = data.get("last_suggestions")
+        if suggs and (time.time() - data.get("suggestion_timestamp", 0) <= _TTL_SECONDS):
+            return {
+                "suggestions": list(suggs),
+                "original_query": data.get("last_suggested_query", ""),
+                "unfound_names": list(data.get("last_unfound_names", []))
+            }
+    return None
+
+
+def clear_last_suggestions(session_id: Optional[str]) -> None:
+    """Clears pending suggestions once confirmed or consumed."""
+    sid = _clean_session_id(session_id)
+    with _LOCK:
+        for s in set([sid, "default_session"]):
+            if s in _SESSIONS:
+                _SESSIONS[s].pop("last_suggestions", None)
+                _SESSIONS[s].pop("last_suggested_query", None)
+                _SESSIONS[s].pop("last_unfound_names", None)
+                _SESSIONS[s].pop("suggestion_timestamp", None)
+

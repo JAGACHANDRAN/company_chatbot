@@ -2371,7 +2371,12 @@ export function FilterBar({
   facetCounts,
   totalRecordsCount,
   filteredCount,
+  searchQuery,
 }) {
+  if (totalRecordsCount <= 1) {
+    return null;
+  }
+
   const hasActiveFilters =
     activeFilters.email !== 'all' ||
     activeFilters.phone !== 'all' ||
@@ -2441,11 +2446,19 @@ export function FilterBar({
               <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"></path>
             </svg>
           </div>
-          <div>
-            <div className="text-xs font-bold text-slate-900 tracking-tight leading-tight">
+          <div className="min-w-0 pr-1">
+            <div className="text-xs font-bold text-slate-900 tracking-tight leading-tight break-words">
               Showing {filteredCount} of {totalRecordsCount} records
+              {searchQuery ? (
+                <>
+                  {' '}of{' '}
+                  <span className="text-[13.5px] font-extrabold text-slate-950 inline align-baseline">
+                    "{searchQuery}"
+                  </span>
+                </>
+              ) : null}
             </div>
-            <div className="text-[11px] font-medium text-slate-400">
+            <div className="text-[11px] font-medium text-slate-400 mt-0.5">
               {hasActiveFilters ? 'Filters applied' : 'All records'}
             </div>
           </div>
@@ -2664,6 +2677,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
   // 2. Assistant Bot Response Row
   const { error, loading, text, is_system_notice } = message;
   const [copied, setCopied] = useState(false);
+  const resultsTopRef = useRef(null);
 
   // Active filters and pagination state kept per message
   const [activeFilters, setActiveFilters] = useState({
@@ -2849,6 +2863,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
 
   // Paginated items (25 items per page)
   const totalFiltered = filteredItems.length;
+  const showFilters = recordsWithMeta.length > 1;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedItems = useMemo(() => {
@@ -2876,6 +2891,42 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
     : totalFiltered > 1
     ? 'Export All'
     : 'Export Response';
+
+  const [navButtonClicked, setNavButtonClicked] = useState(null);
+
+  const handlePrevPage = () => {
+    setNavButtonClicked('prev');
+    setCurrentPage((p) => Math.max(1, p - 1));
+    setTimeout(() => setNavButtonClicked(null), 300);
+  };
+
+  const handleNextPage = () => {
+    setNavButtonClicked('next');
+    setCurrentPage((p) => Math.min(totalPages, p + 1));
+    setTimeout(() => setNavButtonClicked(null), 300);
+  };
+
+  const handleBottomPrevPage = () => {
+    handlePrevPage();
+    setTimeout(() => {
+      resultsTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  };
+
+  const handleBottomNextPage = () => {
+    handleNextPage();
+    setTimeout(() => {
+      resultsTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  };
+
+  const prevButtonClass = `nav-btn h-9 px-3.5 inline-flex items-center justify-center rounded-lg bg-black text-white text-xs font-semibold hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 select-none active:scale-95 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-black disabled:active:scale-100 ${
+    navButtonClicked === 'prev' ? 'is-active !bg-blue-600' : ''
+  }`;
+
+  const nextButtonClass = `nav-btn h-9 px-3.5 inline-flex items-center justify-center rounded-lg bg-black text-white text-xs font-semibold hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 select-none active:scale-95 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-black disabled:active:scale-100 ${
+    navButtonClicked === 'next' ? 'is-active !bg-blue-600' : ''
+  }`;
 
   const handleCopyFormatted = () => {
     const linesToCopy = filteredCompanies
@@ -2909,13 +2960,21 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
   );
 
   return (
-    <div className={`flex flex-col items-start w-full relative ${hasOpenDropdown ? 'z-40' : 'z-10'}`}>
+    <div
+      className={`flex flex-col ${
+        showFilters ? 'items-start' : 'items-center'
+      } w-full relative ${hasOpenDropdown ? 'z-40' : 'z-10'}`}
+    >
       {/* Bot Header Line (only here when there are no records with sidebar) */}
-      {recordsWithMeta.length === 0 && botHeader}
+      {recordsWithMeta.length === 0 && (
+        <div className="w-full max-w-3xl mx-auto">
+          {botHeader}
+        </div>
+      )}
 
       {/* Loading State */}
       {loading && (
-        <div className="flex items-center gap-3 py-2 px-1 text-slate-700 animate-fadeIn">
+        <div className="flex items-center gap-3 py-2 px-1 text-slate-700 animate-fadeIn w-full max-w-3xl mx-auto">
           {/* Three pulsing blue dots */}
           <div className="flex items-center gap-1.5 shrink-0" aria-label="Searching">
             <span
@@ -2939,7 +2998,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
 
       {/* Error State */}
       {!loading && error && (
-        <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-5 w-full max-w-3xl flex items-start gap-3 shadow-xs">
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-5 w-full max-w-3xl mx-auto flex items-start gap-3 shadow-xs">
           <span className="material-symbols-outlined text-rose-500 text-xl flex-shrink-0">warning</span>
           <div>
             <h4 className="font-headline-xl text-xs font-bold uppercase tracking-wider text-rose-900">
@@ -2953,7 +3012,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
       {/* System Notice State (e.g. dataset uploaded) */}
       {!loading && !error && is_system_notice && (
         <div
-          className="bg-white/95 backdrop-blur-md border border-emerald-200 shadow-md text-slate-800 rounded-2xl p-6 w-full max-w-3xl space-y-2"
+          className="bg-white/95 backdrop-blur-md border border-emerald-200 shadow-md text-slate-800 rounded-2xl p-6 w-full max-w-3xl mx-auto space-y-2"
           style={{
             boxShadow:
               'rgba(2, 132, 199, 0.08) 0px 10px 30px -5px, rgba(15, 23, 42, 0.04) 0px 2px 8px -2px',
@@ -2969,23 +3028,36 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
 
       {/* Normal Query Response */}
       {!loading && !error && !is_system_notice && (
-        <div className="space-y-4 w-full">
+        <div className={`space-y-4 w-full ${showFilters ? '' : 'flex flex-col items-center'}`}>
           {recordsWithMeta.length > 0 ? (
-            <div className="w-full flex flex-col md:flex-row items-start gap-4 lg:gap-6 pb-2 sm:pb-4">
-              {/* Left Column: Fully static/constant Filter Sidebar */}
-              <aside className="w-full md:w-72 lg:w-72 xl:w-80 shrink-0 md:sticky md:top-2 md:self-start z-20">
-                <FilterBar
-                  activeFilters={activeFilters}
-                  onFilterChange={handleFilterChange}
-                  onClearFilters={handleClearFilters}
-                  facetCounts={facetCounts}
-                  totalRecordsCount={recordsWithMeta.length}
-                  filteredCount={totalFiltered}
-                />
-              </aside>
+            <div
+              className={`w-full ${
+                showFilters
+                  ? 'flex flex-col md:flex-row items-start gap-4 lg:gap-6'
+                  : 'max-w-3xl mx-auto flex flex-col items-center'
+              } pb-2 sm:pb-4`}
+            >
+              {/* Left Column: Filter Sidebar (only displayed when multiple records exist) */}
+              {showFilters && (
+                <aside className="w-full md:w-72 lg:w-72 xl:w-80 shrink-0 md:sticky md:top-2 md:self-start z-20">
+                  <FilterBar
+                    activeFilters={activeFilters}
+                    onFilterChange={handleFilterChange}
+                    onClearFilters={handleClearFilters}
+                    facetCounts={facetCounts}
+                    totalRecordsCount={recordsWithMeta.length}
+                    filteredCount={totalFiltered}
+                    searchQuery={activeFilters.search?.trim() || message.userQuery?.trim() || ''}
+                  />
+                </aside>
+              )}
 
-              {/* Right Column: Search Results, Cards & Pagination (Normal natural scrolling) */}
-              <div className="flex-1 min-w-0 w-full max-w-3xl space-y-3.5">
+              {/* Right Column / Centered: Search Results, Cards & Pagination (Normal natural scrolling) */}
+              <div
+                className={`${
+                  showFilters ? 'flex-1 min-w-0' : 'mx-auto'
+                } w-full max-w-3xl space-y-3.5`}
+              >
                 {/* Bot Header Line - positioned right on top of results, not above filters */}
                 {botHeader}
 
@@ -3010,52 +3082,96 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
                   </div>
                 ) : (
                   /* Integrated Results Section with Unified Header Bar, Cards, and Footer */
-                  <div className="bg-white border border-slate-800/80 rounded-2xl shadow-xl shadow-slate-900/5 overflow-hidden w-full max-w-3xl">
+                  <div
+                    ref={resultsTopRef}
+                    className="bg-white border border-slate-200/80 rounded-2xl shadow-sm overflow-hidden w-full max-w-3xl mx-auto"
+                  >
                     {/* Unified Top Results & Sliding Pagination Toolbar - Header */}
-                    <div className="bg-[#0b1329] border-b border-slate-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-white w-full">
-                      {/* Records Count Info */}
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#0284c7] shadow-[0_0_8px_rgba(2,132,199,0.8)] shrink-0"></span>
-                        <div className="text-[13px] leading-tight truncate text-slate-300">
-                          Showing <span className="font-bold text-white tracking-tight">{(safePage - 1) * pageSize + 1} – {Math.min(safePage * pageSize, totalFiltered)}</span> <span className="text-slate-400">of</span> <span className="font-bold text-white tracking-tight">{totalFiltered}</span> records
-                        </div>
+                    <div
+                      className="bg-white border-b border-slate-200/80 p-4 sm:p-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between w-full"
+                      data-purpose="pagination-card"
+                    >
+                      {/* BEGIN: Record Count Information */}
+                      <div
+                        className="text-center sm:text-left text-sm text-slate-500 tracking-tight"
+                        data-purpose="record-counter"
+                      >
+                        <span>Showing </span>
+                        {totalFiltered === 1 ? (
+                          <>
+                            <strong className="font-bold text-slate-900">1</strong>
+                            <span> record</span>
+                          </>
+                        ) : (
+                          <>
+                            <strong className="font-bold text-slate-900">
+                              {(safePage - 1) * pageSize + 1} – {Math.min(safePage * pageSize, totalFiltered)}
+                            </strong>
+                            <span> of </span>
+                            <strong className="font-bold text-slate-900">{totalFiltered}</strong>
+                            <span> records</span>
+                          </>
+                        )}
+                        {(activeFilters.search?.trim() || message.userQuery?.trim()) ? (
+                          <>
+                            <span> of </span>
+                            <strong className="font-bold text-slate-900">
+                              {activeFilters.search?.trim() || message.userQuery?.trim()}
+                            </strong>
+                          </>
+                        ) : null}
                       </div>
+                      {/* END: Record Count Information */}
 
-                      {/* Controls Group */}
+                      {/* BEGIN: Navigation Button Controls */}
                       {totalPages > 1 && (
-                        <div className="flex items-center gap-1.5 shrink-0 ml-auto">
-                          {/* Prev Button */}
+                        <nav
+                          aria-label="Pagination"
+                          className="flex items-center justify-center gap-2"
+                          data-purpose="pagination-controls"
+                        >
+                          {/* Previous Page Button */}
                           <button
+                            aria-label="Previous page"
+                            className={prevButtonClass}
+                            data-purpose="prev-button"
+                            id="btn-prev"
                             type="button"
                             disabled={safePage <= 1}
-                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                            className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-300 hover:text-white text-xs font-semibold tracking-tight transition-all border border-slate-700/60 shadow-sm flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-slate-800/90 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer"
+                            onClick={handlePrevPage}
                             title="Previous page"
                           >
-                            <span className="text-[11px] opacity-80">&lsaquo;</span>
-                            <span>Prev</span>
+                            <span className="mr-1 text-sm leading-none">‹</span> Prev
                           </button>
 
-                          {/* Current Page Indicator / Stepper */}
-                          <div className="px-2.5 py-1.5 rounded-lg bg-[#070d1e] border border-slate-800/90 text-center min-w-[50px] shadow-inner select-none">
-                            <span className="text-xs font-bold tracking-wide text-sky-400">{safePage}</span>
-                            <span className="text-slate-500 text-[11px] mx-0.5 font-normal">/</span>
-                            <span className="text-slate-400 text-xs font-semibold">{totalPages}</span>
+                          {/* Current Page Indicator / Pill Badge */}
+                          <div
+                            aria-current="page"
+                            className="h-9 px-3.5 inline-flex items-center justify-center rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold select-none min-w-[3.5rem]"
+                            data-purpose="page-indicator"
+                            id="page-indicator"
+                          >
+                            <span className="text-blue-600 font-bold">{safePage}</span>
+                            <span className="mx-1 text-slate-400">/</span>
+                            <span className="text-slate-600 font-medium">{totalPages}</span>
                           </div>
 
-                          {/* Next Button */}
+                          {/* Next Page Button */}
                           <button
+                            aria-label="Next page"
+                            className={nextButtonClass}
+                            data-purpose="next-button"
+                            id="btn-next"
                             type="button"
                             disabled={safePage >= totalPages}
-                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                            className="px-3 py-1.5 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] active:scale-95 text-white text-xs font-semibold tracking-tight transition-all shadow-md shadow-sky-950/40 border border-sky-400/30 flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-[#0284c7] disabled:cursor-not-allowed cursor-pointer"
+                            onClick={handleNextPage}
                             title="Next page"
                           >
-                            <span>Next</span>
-                            <span className="text-[11px] opacity-90">&rsaquo;</span>
+                            Next <span className="ml-1 text-sm leading-none">›</span>
                           </button>
-                        </div>
+                        </nav>
                       )}
+                      {/* END: Navigation Button Controls */}
                     </div>
 
                     {/* Cards Stack directly attached with no gap */}
@@ -3073,39 +3189,83 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
 
                     {/* Integrated Bottom Pagination Footer if multiple pages */}
                     {totalPages > 1 && (
-                      <div className="bg-[#0b1329] border-t border-slate-800/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-white w-full">
-                        <div className="text-[13px] text-slate-300 leading-tight">
-                          Page <span className="font-bold text-white tracking-tight">{safePage}</span> <span className="text-slate-400">of</span> <span className="font-bold text-white tracking-tight">{totalPages}</span> <span className="text-slate-400">({totalFiltered} total records)</span>
+                      <div
+                        className="bg-white border-t border-slate-200/80 p-4 sm:p-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between w-full"
+                        data-purpose="pagination-card"
+                      >
+                        {/* BEGIN: Record Count Information */}
+                        <div
+                          className="text-center sm:text-left text-sm text-slate-500 tracking-tight"
+                          data-purpose="record-counter"
+                        >
+                          <span>Showing </span>
+                          <strong className="font-bold text-slate-900">
+                            {(safePage - 1) * pageSize + 1} – {Math.min(safePage * pageSize, totalFiltered)}
+                          </strong>
+                          <span> of </span>
+                          <strong className="font-bold text-slate-900">{totalFiltered}</strong>
+                          <span> records</span>
+                          {(activeFilters.search?.trim() || message.userQuery?.trim()) ? (
+                            <>
+                              <span> of </span>
+                              <strong className="font-bold text-slate-900">
+                                {activeFilters.search?.trim() || message.userQuery?.trim()}
+                              </strong>
+                            </>
+                          ) : null}
+                          <span className="text-slate-400 text-xs ml-1.5 font-normal">
+                            (Page <strong className="font-semibold text-slate-700">{safePage}</strong> of <strong className="font-semibold text-slate-700">{totalPages}</strong>)
+                          </span>
                         </div>
-                        <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                        {/* END: Record Count Information */}
+
+                        {/* BEGIN: Navigation Button Controls */}
+                        <nav
+                          aria-label="Pagination"
+                          className="flex items-center justify-center gap-2"
+                          data-purpose="pagination-controls"
+                        >
+                          {/* Previous Page Button */}
                           <button
+                            aria-label="Previous page"
+                            className={prevButtonClass}
+                            data-purpose="prev-button"
+                            id="btn-prev-bottom"
                             type="button"
                             disabled={safePage <= 1}
-                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                            className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-300 hover:text-white text-xs font-semibold tracking-tight transition-all border border-slate-700/60 shadow-sm flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-slate-800/90 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer"
+                            onClick={handleBottomPrevPage}
                             title="Previous page"
                           >
-                            <span className="text-[11px] opacity-80">&lsaquo;</span>
-                            <span>Prev</span>
+                            <span className="mr-1 text-sm leading-none">‹</span> Prev
                           </button>
 
-                          <div className="px-2.5 py-1.5 rounded-lg bg-[#070d1e] border border-slate-800/90 text-center min-w-[50px] shadow-inner select-none">
-                            <span className="text-xs font-bold tracking-wide text-sky-400">{safePage}</span>
-                            <span className="text-slate-500 text-[11px] mx-0.5 font-normal">/</span>
-                            <span className="text-slate-400 text-xs font-semibold">{totalPages}</span>
+                          {/* Current Page Indicator / Pill Badge */}
+                          <div
+                            aria-current="page"
+                            className="h-9 px-3.5 inline-flex items-center justify-center rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold select-none min-w-[3.5rem]"
+                            data-purpose="page-indicator"
+                            id="page-indicator-bottom"
+                          >
+                            <span className="text-blue-600 font-bold">{safePage}</span>
+                            <span className="mx-1 text-slate-400">/</span>
+                            <span className="text-slate-600 font-medium">{totalPages}</span>
                           </div>
 
+                          {/* Next Page Button */}
                           <button
+                            aria-label="Next page"
+                            className={nextButtonClass}
+                            data-purpose="next-button"
+                            id="btn-next-bottom"
                             type="button"
                             disabled={safePage >= totalPages}
-                            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                            className="px-3 py-1.5 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] active:scale-95 text-white text-xs font-semibold tracking-tight transition-all shadow-md shadow-sky-950/40 border border-sky-400/30 flex items-center gap-1 disabled:opacity-30 disabled:hover:bg-[#0284c7] disabled:cursor-not-allowed cursor-pointer"
+                            onClick={handleBottomNextPage}
                             title="Next page"
                           >
-                            <span>Next</span>
-                            <span className="text-[11px] opacity-90">&rsaquo;</span>
+                            Next <span className="ml-1 text-sm leading-none">›</span>
                           </button>
-                        </div>
+                        </nav>
+                        {/* END: Navigation Button Controls */}
                       </div>
                     )}
                   </div>
@@ -3138,7 +3298,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
                 )}
 
                 {/* Bot Response Bottom Action Toolbar */}
-                <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1 px-1 text-slate-500 w-full">
+                <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1 px-1 text-slate-500 w-full max-w-3xl mx-auto">
                   <div className="text-[11px] text-slate-400 font-medium">
                     {totalFiltered > 0 ? (
                       <span>
@@ -3174,7 +3334,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
             </div>
           ) : message.not_found && message.not_found.length > 0 ? (
             /* Render Not Found Banner */
-            <div className="bg-gradient-to-r from-amber-50/90 to-sky-50/60 border border-amber-200/80 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4 w-full max-w-3xl">
+            <div className="bg-gradient-to-r from-amber-50/90 to-sky-50/60 border border-amber-200/80 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4 w-full max-w-3xl mx-auto">
               <div className="flex items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 border border-amber-300/60 shadow-2xs">
                   <span className="material-symbols-outlined text-xl">travel_explore</span>
@@ -3219,7 +3379,7 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
           ) : text && text !== 'No data found' ? (
             /* Fallback formatted message for general notifications */
             <div
-              className="bg-white/95 backdrop-blur-md border border-sky-100 shadow-md text-slate-800 rounded-2xl p-5 sm:p-6 w-full max-w-3xl"
+              className="bg-white/95 backdrop-blur-md border border-sky-100 shadow-md text-slate-800 rounded-2xl p-5 sm:p-6 w-full max-w-3xl mx-auto"
               style={{
                 boxShadow:
                   'rgba(2, 132, 199, 0.08) 0px 10px 30px -5px, rgba(15, 23, 42, 0.04) 0px 2px 8px -2px',
@@ -3228,6 +3388,38 @@ export default function ChatMessage({ message, onInspect, onEdit, onRunSearch })
               <div className="text-sm md:text-[14.5px] leading-relaxed text-slate-800 font-sans">
                 <FormattedMessageText text={text} />
               </div>
+
+              {/* Clickable suggestion pills if message contains suggestions */}
+              {(() => {
+                let sugs = [];
+                if (Array.isArray(message.suggestions) && message.suggestions.length > 0) {
+                  sugs = message.suggestions;
+                } else if (message.suggestions && typeof message.suggestions === 'object') {
+                  sugs = Object.values(message.suggestions).flat().filter(Boolean);
+                } else if (text && /did you mean:?\s*([^?]+)\?/i.test(text)) {
+                  const m = text.match(/did you mean:?\s*([^?]+)\?/i);
+                  if (m && m[1]) {
+                    sugs = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+                  }
+                }
+                if (sugs.length === 0) return null;
+                return (
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-500">Suggestions:</span>
+                    {sugs.map((sug, sIdx) => (
+                      <button
+                        key={`fallback-sug-${sIdx}`}
+                        type="button"
+                        onClick={() => onRunSearch?.(sug)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-sky-50 hover:bg-sky-100 text-sky-700 hover:text-sky-900 border border-sky-200 font-semibold text-xs shadow-2xs hover:scale-102 transition-all cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-xs text-sky-600">apartment</span>
+                        <span>{sug}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* Action Toolbar */}
               <div className="flex items-center justify-end gap-2 pt-3 mt-4 border-t border-slate-100 text-slate-400">

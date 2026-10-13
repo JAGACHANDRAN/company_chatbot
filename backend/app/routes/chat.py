@@ -52,7 +52,10 @@ from ..services.session_cache import (
     store_last_result_set,
     get_last_result_set,
     update_current_result_set,
-    reset_session_filter
+    reset_session_filter,
+    store_last_suggestions,
+    get_last_suggestions,
+    clear_last_suggestions
 )
 from ..services.contact_search import (
     get_or_build_vocab,
@@ -321,6 +324,62 @@ def format_api_sources_and_records(final_records: List[dict], structured_query: 
     return formatted_sources, display_records, top_dataset, top_db
 
 
+def extract_suggestions_from_history(history: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """Extracts Did You Mean suggestions from prior assistant message turns in history."""
+    if not history:
+        return None
+    for turn in reversed(history):
+        role = str(turn.get("role") or turn.get("sender") or "").lower()
+        if role in ("assistant", "bot", "calispec"):
+            content = str(turn.get("content") or turn.get("message") or turn.get("text") or "")
+            turn_suggs = turn.get("suggestions")
+            if turn_suggs:
+                if isinstance(turn_suggs, list) and turn_suggs:
+                    return {"suggestions": list(turn_suggs), "message": content}
+                elif isinstance(turn_suggs, dict) and turn_suggs:
+                    flat = [s for sub in turn_suggs.values() for s in (sub if isinstance(sub, list) else [sub])]
+                    if flat:
+                        return {"suggestions": flat, "message": content}
+            # Regex match "Did you mean: X?" or "(did you mean X?)"
+            m = re.search(r"(?:did you mean:?)\s*([^?]+)\?", content, re.IGNORECASE)
+            if m:
+                sugg_str = m.group(1).strip()
+                suggs = [s.strip() for s in sugg_str.split(",") if s.strip()]
+                if suggs:
+                    m_unf = re.search(r"No matching records found for ['\"]([^'\"]+)['\"]", content, re.IGNORECASE)
+                    unf = [m_unf.group(1).strip()] if m_unf else []
+                    return {"suggestions": suggs, "message": content, "unfound_names": unf}
+    return None
+
+
+def is_affirmative_suggestion_confirmation(query: str, suggested_companies: List[str]) -> bool:
+    """Checks if the user's input affirms a previously suggested company name."""
+    q = query.strip().lower()
+    q_alpha = re.sub(r"[^\w\s]", "", q).strip()
+
+    affirmative_exact = {
+        "yes", "yeah", "yup", "yep", "sure", "ok", "okay", "y", "ya", "pls", "please",
+        "correct", "right", "true", "proceed", "go ahead", "do it", "search",
+        "yes please", "yes pls", "yes do that", "yes that", "yes that one",
+        "yes search that", "yes search for that", "yes search it", "yes search",
+        "search that", "search for that", "search it", "search for it",
+        "please search", "pls search"
+    }
+    if q_alpha in affirmative_exact:
+        return True
+
+    for cand in suggested_companies:
+        cand_clean = re.sub(r"[^\w\s]", "", cand.lower()).strip()
+        if not cand_clean:
+            continue
+        if q_alpha == cand_clean:
+            return True
+        if q_alpha in (f"yes {cand_clean}", f"sure {cand_clean}", f"ok {cand_clean}", f"search {cand_clean}", f"yes search {cand_clean}"):
+            return True
+
+    return False
+
+
 async def execute_rag_pipeline(
     raw_query: str,
     dataset_id: Optional[str] = None,
@@ -356,6 +415,39 @@ async def execute_rag_pipeline(
     if "--explain" in effective_query.lower():
         explain = True
         effective_query = re.sub(r"--explain\b", "", effective_query, flags=re.IGNORECASE).strip()
+
+    # Step 2b: Conversational confirmation of "Did you mean: X?" suggestions
+    pending = get_last_suggestions(session_id)
+    if not pending and history:
+        pending = extract_suggestions_from_history(history)
+
+    if pending and pending.get("suggestions"):
+        sugg_list = pending["suggestions"]
+        if is_affirmative_suggestion_confirmation(effective_query, sugg_list):
+            chosen = sugg_list[0]
+            orig_q = pending.get("original_query", "")
+            unfound = pending.get("unfound_names", [])
+
+            resolved_query = chosen
+            if orig_q and unfound:
+                for uf in unfound:
+                    if uf.lower() in orig_q.lower():
+                        resolved_query = re.sub(rf"\b{re.escape(uf)}\b", chosen, orig_q, flags=re.IGNORECASE).strip()
+                        break
+
+            # Handle user adding a filter in the confirmation (e.g. "yes with email")
+            filter_suffix = re.sub(
+                r"^(?:yes|yeah|yup|yep|sure|ok|okay|y|ya|correct|right)\s*(?:please|pls)?\s*",
+                "",
+                effective_query,
+                flags=re.IGNORECASE
+            ).strip()
+            if filter_suffix and filter_suffix.lower() not in (chosen.lower(), "do that", "that", "search", "search that", "search for that"):
+                resolved_query = f"{resolved_query} {filter_suffix}"
+
+            logger.info(f"[Suggestion Confirmation] Confirmed '{effective_query}' -> '{resolved_query}' (suggested: {chosen})")
+            effective_query = resolved_query
+            clear_last_suggestions(session_id)
 
     # Step 3a: Trace Query Planner Span
     has_prev = bool(get_last_result_set(session_id))
@@ -775,8 +867,20 @@ async def execute_rag_pipeline(
             "has_linkedin_count": has_linkedin
         })
 
-    unfound = plan_res.get("unfound", [])
-    suggestions = [s for item in unfound for s in item[1]] if unfound else None
+    unfound = plan_res.get("unfound_list", plan_res.get("unfound", []))
+    unfound_names = [item[0] for item in unfound] if unfound else []
+    suggestions_map = {item[0]: item[1] for item in unfound if len(item) > 1 and item[1]} if unfound else {}
+    flat_suggestions = [s for item in unfound if len(item) > 1 for s in item[1]] if unfound else []
+
+    if not found and flat_suggestions:
+        store_last_suggestions(
+            session_id=session_id,
+            suggestions=flat_suggestions,
+            original_query=effective_query,
+            unfound_names=unfound_names
+        )
+    elif found:
+        clear_last_suggestions(session_id)
 
     elapsed_ms = int((time.time() - t_start) * 1000)
     logger.info(
@@ -821,7 +925,8 @@ async def execute_rag_pipeline(
         understood_as=[f"Tasks: {len(query_plan.tasks)}", f"Companies: {query_plan.companies}"],
         retrieval_mode="planned_hybrid_retrieval",
         total=len(display_records) if found else 0,
-        suggestions=suggestions if (not found and suggestions) else None,
+        not_found=unfound_names if (not found and unfound_names) else None,
+        suggestions=suggestions_map if (not found and suggestions_map) else (flat_suggestions if (not found and flat_suggestions) else None),
         meta=meta_info
     )
 

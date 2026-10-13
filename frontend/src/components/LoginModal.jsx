@@ -159,7 +159,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
                   </span>
                   <input
                     className="w-full h-[48px] pl-11 pr-4 rounded-full bg-[#f0f4fc] border-0 text-slate-800 placeholder:text-slate-400 font-medium text-sm focus:outline-none focus:bg-white focus:ring-2 focus:ring-[#00639b]/20 shadow-inner transition-all"
-                    placeholder="e.g. Sarah Jenkins"
+                    placeholder="Your Name"
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -313,20 +313,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess, initialErr
                 />
               </svg>
               <span>Continue with Google</span>
-            </button>
-
-            <button
-              className="w-full h-[46px] px-4 rounded-full bg-white hover:bg-slate-50 text-slate-700 text-sm font-semibold shadow-xs flex items-center justify-center gap-3 transition-colors active:scale-[0.99] border border-slate-200"
-              type="button"
-              onClick={() => handleOAuthClick('Microsoft')}
-            >
-              <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 21 21">
-                <rect fill="#f25022" height="9" width="9" x="1" y="1" />
-                <rect fill="#7fba00" height="9" width="9" x="11" y="1" />
-                <rect fill="#00a4ef" height="9" width="9" x="11" y="1" />
-                <rect fill="#ffb900" height="9" width="9" x="11" y="1" />
-              </svg>
-              <span>Continue with Microsoft</span>
             </button>
           </div>
         </div>
